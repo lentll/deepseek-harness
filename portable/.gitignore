@@ -9,6 +9,20 @@ build/icon.png
 
 # Local build output when someone runs the build outside CI.
 out/
+data/
 *.7z
 *.zip
+
+# Secrets and credentials must never be committed, not even as a template.
+# The published package ships without them and the app recreates them on the
+# first launch, so nothing here is needed for a build to succeed.
+.env
+.env.*
+!.env.example
+.credentials.yaml
+credentials.json
+.git-credentials
 *.pfx
+*.p12
+*.pem
+*.key

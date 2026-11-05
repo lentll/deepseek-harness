@@ -145,7 +145,7 @@ node scripts/build-portable.mjs  # 输出到 <源码盘符>:\AI\deepseek-harness
 - **触发方式只有手动**：两份 workflow 都去掉了 `schedule` 和 `push`，同步上游、改外壳、提交代码都不会自己开跑；要出包就点 Run workflow。原因：一次构建 8–12 分钟且要下载 1.3 GB 依赖，自动跑容易在你没准备时占掉额度、覆盖 Release。
 - **版本映射**：GitHub tag `dsh-v0.2.2-rc.1` → npm 包 `0.2.2-rc.1`；tag 已打但 npm 未发布时任务跳过并告警。
 - **产物**：Release `portable-v<版本>` + `DeepSeek-Harness-portable-<版本>.7z`（**排除 `data/`**，因此不含任何 API Key）。
-- **去敏守卫**：打包前扫描 `out\resources\app`，发现 `.env`、`.credentials.yaml` 或 `sk-xxxx` 明文即构建失败。
+- **两道去敏守卫**：构建前先扫**仓库源码**（`scripts/check-secrets.mjs`：`.env`/`.credentials.yaml`/`*.pfx`/`*.pem` 等文件名，以及 `sk-` 密钥、GitHub token、PEM 私钥块、AWS key 的明文），命中即中断；构建后再扫 **`out\` 产物**（同上文件名 + `resources\app` 里的 `sk-` 明文），命中同样中断。前者防「提交进仓库但没进包」，后者防「构建过程新写的」，两者互补。命中报告只给文件名和行号，不打印命中的密文，避免 CI 日志变成新的泄露面。
 - **签名**：`SIGNING_PFX_BASE64` / `SIGNING_PFX_PASSWORD` 两个 secret 已配置，构建末尾会给 `DeepSeek Harness.exe` 挂上自签证书与时间戳；secret 为空时该步骤自动跳过、不影响出包。
 
 ### 从主仓库一键构建（master 上的 build-portable.yml）
@@ -157,7 +157,14 @@ node scripts/build-portable.mjs  # 输出到 <源码盘符>:\AI\deepseek-harness
 - **外壳仍来自 protable**：先 checkout master 读版本，再把 `protable` 检出到 `portable-src/` 构建，上游源码与外壳不混在一起。
 - **同名 Release**：已存在就直接跳过（避免误覆盖别人已下载的包），确实要重建时勾 `force`。
 
-文件本地副本在 `ci/build-portable.yml`（改完贴回 GitHub），`ci/_test-semver.ps1` 与 `ci/_test-resolve.ps1` 是版本比较、版本选择的离线单测（12 + 6 条断言），逻辑改动后先跑这两个。
+文件本地副本在 `ci/build-portable.yml`（改完贴回 GitHub），`ci/_test-semver.ps1` 与 `ci/_test-resolve.ps1` 是版本比较、版本选择的离线单测（12 + 6 条断言），`ci/_test-secrets.mjs` 是去敏扫描的 19 条断言（`node ci/_test-secrets.mjs`）。这些逻辑改动后先跑对应的单测再提交。
+
+去敏扫描也能本地单跑，用来在提交前自查：
+
+```bash
+node scripts/check-secrets.mjs --root .          # 扫当前目录，干净则 exit 0
+node scripts/check-secrets.mjs --root . --json   # 机器可读的命中列表
+```
 
 ## 运行机制
 

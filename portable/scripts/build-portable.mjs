@@ -221,7 +221,7 @@ const instructions = `DeepSeek Harness 便携版（U 盘版）
     - Base URL 填你的网关地址（示例：https://api.example.com/v1）
     - API Key 填你自己 sk- 开头的密钥，再选一个模型即可。
 
-  也可以用记事本改 data\\dsh-home\\.env 里的 TOKENRHYTHM_API_KEY，
+  也可以用记事本改 data\\dsh-home\\.env 里的网关密钥变量，
   以及 data\\dsh-home\\profiles\\web\\cordis.patch.yml 里的模型列表。
 
 

@@ -1,0 +1,8 @@
+# Local helper that carries machine-specific paths; never part of the repo.
+推送更新.cmd
+
+# Build output and archives, in case someone builds locally.
+out/
+*.7z
+*.zip
+*.pfx

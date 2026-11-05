@@ -1,0 +1,312 @@
+# One-click portable build, started from the main repository (master).
+#
+# Why this file lives on master: the Actions tab lists the workflows of the
+# default branch, so this is the one place where a "Run workflow" button shows
+# up right next to the code you just updated upstream. The Electron shell is
+# still taken from `portable/` on the `protable` branch (an independent root
+# branch), so no upstream source is ever copied into that branch.
+#
+# Version picked, in this order:
+#   1. the `version` input, when given (must exist on npm, otherwise fail loudly);
+#   2. the newer of this branch's root package.json and the newest `dsh-v*`
+#      release of deepseek-ai/deepseek-harness;
+#   3. if that newer one is not on npm yet, the other one (master often carries
+#      a version that is merged but not released).
+#
+# Nothing is compiled from the 1.4M-line monorepo: the published npm package
+# already contains the built web frontend that the Electron shell loads.
+
+name: Build portable (master)
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'dsh version, e.g. 0.2.2-rc.1. Empty = newest of this branch and upstream.'
+        required: false
+        default: ''
+      force:
+        description: 'Rebuild even when the release already exists.'
+        type: boolean
+        default: false
+  push:
+    branches:
+      - master
+    paths:
+      - 'package.json'
+
+permissions:
+  contents: write
+
+# Shares the group with the protable workflow so two builds never race for the
+# same release tag, and a long upload is never cancelled halfway.
+concurrency:
+  group: portable-build
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_REPO: deepseek-ai/deepseek-harness
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      # Job-level so `if:` conditions can test whether signing is configured.
+      SIGNING_PFX_BASE64: ${{ secrets.SIGNING_PFX_BASE64 }}
+      SIGNING_PFX_PASSWORD: ${{ secrets.SIGNING_PFX_PASSWORD }}
+
+    steps:
+      - name: Checkout master (version source)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Checkout portable shell
+        uses: actions/checkout@v4
+        with:
+          ref: protable
+          path: portable-src
+          fetch-depth: 1
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: portable-src/portable/package-lock.json
+
+      - name: Resolve target version
+        id: resolve
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          # semver comparison: 0.2.2-rc.1 > 0.2.2-alpha.3, 0.2.2 > 0.2.2-rc.1
+          function Compare-Semver([string]$a, [string]$b) {
+            $pa = $a.Split('-', 2)
+            $pb = $b.Split('-', 2)
+            $ca = $pa[0].Split('.')
+            $cb = $pb[0].Split('.')
+            for ($i = 0; $i -lt 3; $i++) {
+              $na = if ($i -lt $ca.Count) { [long]$ca[$i] } else { 0 }
+              $nb = if ($i -lt $cb.Count) { [long]$cb[$i] } else { 0 }
+              if ($na -ne $nb) { if ($na -gt $nb) { return 1 } else { return -1 } }
+            }
+            $ra = $pa.Count -gt 1
+            $rb = $pb.Count -gt 1
+            if (-not $ra -and -not $rb) { return 0 }
+            if (-not $ra) { return 1 }
+            if (-not $rb) { return -1 }
+            $ia = $pa[1].Split('.')
+            $ib = $pb[1].Split('.')
+            $n = [Math]::Min($ia.Count, $ib.Count)
+            for ($i = 0; $i -lt $n; $i++) {
+              $x = $ia[$i]; $y = $ib[$i]
+              $xn = $x -match '^\d+$'; $yn = $y -match '^\d+$'
+              if ($xn -and $yn) {
+                if ([long]$x -ne [long]$y) { if ([long]$x -gt [long]$y) { return 1 } else { return -1 } }
+              } elseif ($xn) { return -1 }
+              elseif ($yn) { return 1 }
+              else {
+                $c = [string]::CompareOrdinal($x, $y)
+                if ($c -ne 0) { if ($c -gt 0) { return 1 } else { return -1 } }
+              }
+            }
+            if ($ia.Count -eq $ib.Count) { return 0 }
+            if ($ia.Count -gt $ib.Count) { return 1 } else { return -1 }
+          }
+
+          function Test-NpmVersion([string]$v) {
+            if (-not $v) { return $false }
+            $out = npm view "@deepseek-ai/dsh@$v" version 2>$null
+            return ($LASTEXITCODE -eq 0 -and [bool]$out)
+          }
+
+          $headers = @{ 'User-Agent' = 'dsh-portable-ci'; 'Accept' = 'application/vnd.github+json' }
+          $releases = Invoke-RestMethod -Headers $headers -Uri "https://api.github.com/repos/$env:UPSTREAM_REPO/releases?per_page=30"
+          $pick = $releases | Where-Object { $_.tag_name -like 'dsh-v*' } | Select-Object -First 1
+          $upstream = if ($pick) { $pick.tag_name -replace '^dsh-v', '' } else { '' }
+
+          $repoVersion = (Get-Content ./package.json -Raw | ConvertFrom-Json).version
+          Write-Host "this branch: $repoVersion | upstream latest: $upstream"
+
+          $explicit = "${{ inputs.version }}".Trim()
+          if ($explicit) {
+            $version = $explicit -replace '^dsh-v', '' -replace '^v', ''
+            if (-not (Test-NpmVersion $version)) { throw "$version is not on npm yet - nothing to package" }
+            $source = 'input'
+          } else {
+            $candidates = @($repoVersion, $upstream) | Where-Object { $_ }
+            $winner = $candidates[0]
+            foreach ($c in $candidates) { if ((Compare-Semver $c $winner) -gt 0) { $winner = $c } }
+            $version = $winner
+            $source = "newest of this branch ($repoVersion) and upstream ($upstream)"
+            if (-not (Test-NpmVersion $version)) {
+              $fallback = $candidates | Where-Object { $_ -ne $version } | Select-Object -First 1
+              if (-not $fallback -or -not (Test-NpmVersion $fallback)) { throw "no usable version on npm ($repoVersion / $upstream)" }
+              Write-Host "::warning::$version is merged but not on npm - falling back to $fallback"
+              $version = $fallback
+              $source = "npm fallback ($fallback)"
+            }
+          }
+
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "source=$source" >> $env:GITHUB_OUTPUT
+          "repo_version=$repoVersion" >> $env:GITHUB_OUTPUT
+          Write-Host "target: $version (from $source)"
+
+      - name: Decide whether to build
+        id: decide
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $version = "${{ steps.resolve.outputs.version }}"
+          $releaseTag = "portable-v$version"
+          "release_tag=$releaseTag" >> $env:GITHUB_OUTPUT
+
+          $existing = gh release view $releaseTag --repo ${{ github.repository }} 2>$null
+          $force = "${{ inputs.force }}" -eq 'true' -or "${{ github.event_name }}" -eq 'push'
+          if ($existing -and -not $force) {
+            Write-Host "release $releaseTag already exists - nothing to do."
+            "skip=true" >> $env:GITHUB_OUTPUT
+            "reason=$releaseTag 已发布，跳过（勾选 force 可重建）" >> $env:GITHUB_OUTPUT
+            exit 0
+          }
+
+          "skip=false" >> $env:GITHUB_OUTPUT
+          "clobber=$([bool]$existing)" >> $env:GITHUB_OUTPUT
+          "reason=$version" >> $env:GITHUB_OUTPUT
+          Write-Host "building $version (clobber=$([bool]$existing))"
+
+      - name: Install build dependencies
+        if: steps.decide.outputs.skip != 'true'
+        shell: pwsh
+        run: npm ci --prefix portable-src/portable --no-audit --no-fund
+
+      - name: Install dsh runtime
+        if: steps.decide.outputs.skip != 'true'
+        shell: pwsh
+        run: |
+          $version = "${{ steps.resolve.outputs.version }}"
+          npm install --prefix portable-src/portable/runtime "@deepseek-ai/dsh@$version" --no-audit --no-fund
+          node -e "console.log('runtime:', require('./portable-src/portable/runtime/node_modules/@deepseek-ai/dsh/package.json').version)"
+
+      - name: Import signing certificate
+        if: steps.decide.outputs.skip != 'true' && env.SIGNING_PFX_BASE64 != ''
+        shell: pwsh
+        run: |
+          $pfx = Join-Path $env:RUNNER_TEMP 'portable-signing.pfx'
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:SIGNING_PFX_BASE64))
+          $secure = ConvertTo-SecureString $env.SIGNING_PFX_PASSWORD -AsPlainText -Force
+          Import-PfxCertificate -FilePath $pfx -CertStoreLocation Cert:\CurrentUser\My -Password $secure | Out-Null
+          Write-Host 'signing certificate imported'
+
+      - name: Build portable package
+        if: steps.decide.outputs.skip != 'true'
+        shell: pwsh
+        run: |
+          # The build signs with whatever certificate sits in the store; without
+          # the secret it logs "signature skipped" and carries on.
+          node portable-src/portable/scripts/build-portable.mjs --out out
+
+      - name: Guard - no credentials in the output
+        if: steps.decide.outputs.skip != 'true'
+        shell: pwsh
+        run: |
+          $out = Join-Path $env:GITHUB_WORKSPACE 'out'
+          $leaks = Get-ChildItem -Path $out -Recurse -Force -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -in @('.env', '.credentials.yaml', 'credentials.json', '.git-credentials') }
+          if ($leaks) {
+            $leaks | ForEach-Object { Write-Host "::error file=$($_.FullName)::credential file in build output" }
+            throw 'credential files found in the build output - refusing to package'
+          }
+          $keyPattern = 'sk-[A-Za-z0-9_-]{20,}'
+          $hits = Get-ChildItem -Path (Join-Path $out 'resources\app') -Recurse -File -ErrorAction SilentlyContinue |
+            Select-String -Pattern $keyPattern -List -ErrorAction SilentlyContinue
+          if ($hits) {
+            $hits | ForEach-Object { Write-Host "::error file=$($_.Path)::possible API key literal" }
+            throw 'possible API key found in shipped sources'
+          }
+          Write-Host 'no credential files or key literals in the output'
+
+      - name: Package archive
+        id: pack
+        if: steps.decide.outputs.skip != 'true'
+        shell: pwsh
+        run: |
+          $version = "${{ steps.resolve.outputs.version }}"
+          $archive = Join-Path $env:GITHUB_WORKSPACE "DeepSeek-Harness-portable-$version.7z"
+
+          $sevenZip = (Get-Command 7z.exe -ErrorAction SilentlyContinue).Source
+          if (-not $sevenZip) { $sevenZip = Join-Path $env:ProgramFiles '7-Zip\7z.exe' }
+          if (-not (Test-Path $sevenZip)) { throw '7-Zip not found on the runner' }
+
+          $source = Join-Path $env:GITHUB_WORKSPACE 'out\*'
+          # `data` is user state (sessions, API key, caches) and must never ship;
+          # the app recreates the folder skeleton on first launch. Anchor the
+          # exclusion to the archive root: a bare `-xr!data` would also strip
+          # nested `data` folders inside the shipped runtime.
+          & $sevenZip a -t7z -mx=5 $archive $source '-x!data\*' | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "7z failed with exit code $LASTEXITCODE" }
+
+          $mb = [math]::Round((Get-Item $archive).Length / 1MB, 1)
+          "archive=$archive" >> $env:GITHUB_OUTPUT
+          "size_mb=$mb" >> $env:GITHUB_OUTPUT
+          Write-Host "archive: $archive ($mb MB)"
+
+          $listing = & $sevenZip l $archive
+          $leaked = $listing | Select-String -Pattern '^\S+\s+\S+\s+\S+\s+\S+\s+data\\' -Quiet
+          if ($leaked) { throw 'archive still contains data\ - refusing to publish' }
+          Write-Host 'confirmed: no data folder in the archive'
+
+      - name: Publish release
+        if: steps.decide.outputs.skip != 'true'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $version = "${{ steps.resolve.outputs.version }}"
+          $tag = "${{ steps.decide.outputs.release_tag }}"
+          $archive = "${{ steps.pack.outputs.archive }}"
+
+          $notes = @(
+            "Portable Windows build of DeepSeek Harness $version.",
+            "",
+            "- Requested from master (${{ github.sha }}), shell from protable.",
+            "- Version source: ${{ steps.resolve.outputs.source }}",
+            "- Runtime: @deepseek-ai/dsh@$version (published npm package, not compiled from source)",
+            "- No installer: unpack, run DeepSeek Harness.exe, keep the folder on the USB stick.",
+            "- No user data inside: set the model endpoint under Settings - Models on first run."
+          ) -join "`n"
+
+          $ghArgs = @('release')
+          if ("${{ steps.decide.outputs.clobber }}" -eq 'True') {
+            $ghArgs += @('upload', $tag, $archive, '--repo', '${{ github.repository }}', '--clobber')
+          } else {
+            $ghArgs += @('create', $tag, $archive, '--repo', '${{ github.repository }}', '--title', "Portable $version", '--notes', $notes)
+            if ($version -match '-') { $ghArgs += '--prerelease' }
+          }
+
+          & gh @ghArgs
+          if ($LASTEXITCODE -ne 0) { throw "gh failed with exit code $LASTEXITCODE" }
+
+      - name: Summary
+        if: always()
+        shell: pwsh
+        run: |
+          $lines = @(
+            '## Portable build',
+            '',
+            '| 项 | 值 |',
+            '|---|---|',
+            "| 版本 | ${{ steps.resolve.outputs.version }} |",
+            "| 版本来源 | ${{ steps.resolve.outputs.source }} |",
+            "| master 记录 | ${{ steps.resolve.outputs.repo_version }} |",
+            "| 结果 | ${{ steps.decide.outputs.skip == 'true' && '已跳过' || '已构建' }} |",
+            "| 说明 | ${{ steps.decide.outputs.reason }} |",
+            "| 归档 | ${{ steps.pack.outputs.size_mb }} MB |",
+            "| 签名 | ${{ env.SIGNING_PFX_BASE64 != '' && '已配置证书' || '未配置，已跳过' }} |"
+          )
+          $lines -join "`n" >> $env:GITHUB_STEP_SUMMARY

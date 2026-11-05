@@ -6,6 +6,22 @@
 
 盘符只影响**编译时把文件写到哪**，不影响程序本身：产物以 exe 所在目录为根目录，U 盘插到任何电脑、被分配成任何盘符都能直接运行（见下表的「换电脑自动识别路径」）。
 
+## 源码从哪来：三个仓库各管什么
+
+| 角色 | 位置 | 作用 |
+|---|---|---|
+| 官方源码仓（上游） | `https://github.com/deepseek-ai/deepseek-harness` | MIT，59 个包组。**版本以这里为准**：官方发 `dsh-v*` tag，同时把 `@deepseek-ai/dsh` 发到 npm |
+| 本机源码副本 | 工作区里的 `deepseek-harness-master\`（与 `deepseek-harness-portable\` 同级） | 官方仓的**快照**（`@deepseek-ai/dsh-root` 0.2.2-alpha.3，没有 `.git`）。只用来取原始图标、查实现细节，不参与构建 |
+| fork 容器 | `https://github.com/lentll/deepseek-harness` | 从官方仓 fork 出来的个人副本，**只为放 `protable` 分支和跑 Actions**；它的 `master` 是上游快照，不承载任何外壳代码 |
+
+升级链路是单向的：
+
+```
+官方仓打 tag dsh-v<版本>  →  npm 发布 @deepseek-ai/dsh@<版本>  →  本工程安装该版本 + 套 Electron 外壳
+```
+
+CI 每天直接查**官方仓**的 releases（`UPSTREAM_REPO: deepseek-ai/deepseek-harness`），不依赖 fork 的 `master` 是否同步过——所以 fork 落后于上游不影响出包。
+
 ## 它做了什么
 
 | 需求 | 实现 |
@@ -39,7 +55,7 @@ deepseek-harness-portable\
 
 ## 运行时为什么用 npm 包而不是源码
 
-仓库本体是 59 个包组、约 139 万行 TypeScript 的 monorepo，`pnpm install + build` 需要 Node ≥ 24.9、MSVC 工具链与长时间构建。
+官方仓本体（`deepseek-ai/deepseek-harness`）是 59 个包组、约 139 万行 TypeScript 的 monorepo，`pnpm install + build` 需要 Node ≥ 24.9、MSVC 工具链与长时间构建。
 `@deepseek-ai/dsh` 在 npm 上已发布完整运行时（含内置 Web 前端产物 `@deepseek-ai/dsh-web-frontend/dist`），因此本方案直接安装发布版，稳定、可重复。
 
 **Electron 版本必须精确为 `44.7.0`**：dsh 的 `node-addon-require-builtin` 只认白名单内的 Electron 指纹（43.0.0 / 44.0.0 / 44.7.0 / 45.0.0-alpha.6），其余版本会在启动时报 `unsupported Electron runtime fingerprint` 并退出。Electron 44.7.0 内置 Node 24.21.0，满足 dsh 的 Node ≥ 24.9。
@@ -122,8 +138,9 @@ node scripts/build-portable.mjs  # 输出到 <源码盘符>:\AI\deepseek-harness
 
 本工程同时以 `portable/` 的形式维护在 fork `lentll/deepseek-harness` 的 `protable` 分支上，由 `.github/workflows/portable-build.yml` 自动出包。细节见 `推送指南.md`，要点：
 
+- **上游是谁**：`env.UPSTREAM_REPO` 指向官方仓 `deepseek-ai/deepseek-harness`，按它的 release 列表取最新 `dsh-v*`（`/releases/latest` 会跳过 prerelease，而 dsh 只发 prerelease，所以列出来自己挑）。fork 的 `master` 只是上游旧快照，**不需要同步**，也不参与出包。
 - **分支形态**：`protable` 是**独立根分支**（不含上游代码），只放 `portable/` 与 workflow。原因：本机到 GitHub 仅约 33 KB/s，完整克隆 353 MB 的上游仓库不现实，独立分支只有约 200 KB，CI 检出也快。
-- **定时任务的前提**：GitHub 的 `schedule` 只认默认分支上的 workflow，所以要么把 `protable` 设为 fork 的默认分支，要么把同一份 workflow 贴到 master。
+- **定时任务的前提**：GitHub 的 `schedule` 只认默认分支上的 workflow。fork 的默认分支目前仍是 `master`，而 `master` 上没有这个 workflow，所以**定时触发还没生效**；要么把 `protable` 设为默认分支，要么把同一份 workflow 贴到 master。在此之前只有手动 Run 或 push 到 `protable` 会触发。
 - **三条触发**：每天 20:00 UTC 拉上游最新 `dsh-v*` release tag；手动 `workflow_dispatch`（可指定版本 / `force`）；push 到 `protable` 自动重建。
 - **版本映射**：GitHub tag `dsh-v0.2.2-rc.1` → npm 包 `0.2.2-rc.1`；tag 已打但 npm 未发布时任务跳过并告警。
 - **产物**：Release `portable-v<版本>` + `DeepSeek-Harness-portable-<版本>.7z`（**排除 `data/`**，因此不含任何 API Key）。

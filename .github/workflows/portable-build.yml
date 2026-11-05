@@ -1,22 +1,21 @@
 # Build the portable Windows package and publish it as a release.
 #
-# Two GitHub behaviours shape this file:
-#   * `schedule` only fires from the repository's DEFAULT branch, so this file
-#     must also exist on `master` — the job itself checks out `protable`.
-#   * every step runs from a `protable` checkout, so the wrapper source and this
-#     workflow always move together.
+# Every step runs from a `protable` checkout, so the wrapper source and this
+# workflow always move together.
 #
 # The version to build comes from the upstream release tag (for example
 # `dsh-v0.2.2-rc.1` becomes `0.2.2-rc.1`), which is then installed from npm.
 # Nothing is compiled from the 1.4M-line monorepo: the published npm package
 # already contains the built web frontend that the Electron shell loads.
+#
+# Manual only: no `schedule` and no `push` trigger, so pushing wrapper changes
+# never starts a build on its own. The everyday entry point is
+# `.github/workflows/build-portable.yml` on master; this copy is the fallback
+# you can still run by hand from the Actions tab.
 
 name: Build portable package
 
 on:
-  schedule:
-    # Daily at 20:00 UTC (04:00 Beijing) — picks up a new upstream release.
-    - cron: '0 20 * * *'
   workflow_dispatch:
     inputs:
       version:
@@ -27,12 +26,6 @@ on:
         description: 'Rebuild even when a release for this version already exists.'
         type: boolean
         default: false
-  push:
-    branches:
-      - protable
-    paths:
-      - 'portable/**'
-      - '.github/workflows/portable-build.yml'
 
 permissions:
   contents: write
@@ -107,7 +100,7 @@ jobs:
           }
 
           $existing = gh release view $releaseTag --repo ${{ github.repository }} 2>$null
-          $force = "${{ inputs.force }}" -eq 'true' -or "${{ github.event_name }}" -eq 'push'
+          $force = "${{ inputs.force }}" -eq 'true'
           if ($existing -and -not $force) {
             Write-Host "release $releaseTag already exists - nothing to do."
             "skip=true" >> $env:GITHUB_OUTPUT

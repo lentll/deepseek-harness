@@ -208,6 +208,14 @@ jobs:
           "size_mb=$mb" >> $env:GITHUB_OUTPUT
           Write-Host "archive: $archive ($mb MB)"
 
+          # Verify the exclusion actually removed the top-level data folder; a
+          # future 7z version changing wildcard semantics must not silently
+          # publish the maintainer's sessions and API key.
+          $listing = & $sevenZip l $archive
+          $leaked = $listing | Select-String -Pattern '^\S+\s+\S+\s+\S+\s+\S+\s+data\\' -Quiet
+          if ($leaked) { throw 'archive still contains data\ - refusing to publish' }
+          Write-Host 'confirmed: no data folder in the archive'
+
       - name: Publish release
         if: steps.decide.outputs.skip != 'true'
         shell: pwsh

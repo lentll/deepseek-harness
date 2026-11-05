@@ -47,6 +47,7 @@ deepseek-harness-portable\
     splash.html           启动画面
   scripts\
     build-portable.mjs    组装最终产物
+    progress.mjs          带百分比的整树拷贝（逐个文件复制 + 进度行）
     make-icon.mjs         PNG → 多尺寸 ICO
     sign-exe.ps1          自签名代码签名证书 + Authenticode 签名
   runtime\                由 npm 安装的 dsh 运行时（@deepseek-ai/dsh + 依赖）
@@ -71,9 +72,24 @@ node scripts/build-portable.mjs  # 输出到 <源码盘符>:\AI\deepseek-harness
 
 输出目录默认取**源码目录所在盘符** + `\AI\deepseek-harness-protable`，源码在哪个盘就写到哪个盘，脚本里不写死盘符；想换位置加 `--out <目录>`，或用环境变量 `DSH_PORTABLE_OUT` 固定。
 
-版本号取自**官方仓**的 release tag：`dsh-v0.2.2-rc.1` → `0.2.2-rc.1`（去掉 `dsh-v` 前缀）。本地要跟新版就改上面那行版本号再跑；CI 则每天自动取官方最新。
+版本号取自**官方仓**的 release tag：`dsh-v0.2.2-rc.1` → `0.2.2-rc.1`（去掉 `dsh-v` 前缀）。本地要跟新版就改上面那行版本号再跑；CI 出包时由 Actions 页面 Run workflow 里的 `version` 决定（留空则取 master `package.json` 与上游最新 release 中较大的那个）。
 
 `build-portable.mjs` 是**幂等覆盖、从不删除**：不该进包的内容（多余 locale、`*.map`、`default_app.asar`）在复制阶段就被过滤，因此重复构建不会触发批量删除，也不会动 `data\`。
+
+### 构建时的进度显示
+
+两段大拷贝（Electron 载荷约 320 MB、dsh 运行时约 1.4 GB / 13 万个文件）都走 `scripts/progress.mjs`：先统计源目录的总字节与文件数，再逐个文件复制并刷新一行进度，不用再盯着黑屏猜是不是卡住。
+
+```text
+[build] copying dsh runtime  42%  623/1398 MB  58800/131113 files
+```
+
+- 在**终端**里这行用 `\r` 原地刷新，约每 120 ms 一次，行尾自动补空格覆盖上一次的残留；
+- 输出被**重定向或跑在 CI** 时改为每前进 10% 打一行（最多 11 行），避免把 13 万个回车塞进日志；
+- 每个阶段结束时补一行汇总：`[build] copying dsh runtime: 1398 MB, 131113 files in 251.9s`；
+- 进度行刻意只用 ASCII：`\r` 覆盖要按字符数补空格，中文是全角、占两列，混进去会算错宽度。
+
+`ci/_test-progress.mjs` 用 23 条断言锁住三个容易出错的方向：百分比提前到 100%（字节统计错）、文件漏拷（包不完整）、CI 日志被回车刷屏。
 
 ## 更新（一键）
 

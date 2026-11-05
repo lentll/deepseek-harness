@@ -18,6 +18,7 @@ import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import * as ResEdit from 'resedit'
+import { copyTree, copyTreeWithProgress } from './progress.mjs'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const projectRoot = path.resolve(here, '..')
@@ -59,32 +60,6 @@ function fail(message) {
 
 for (const required of [electronDist, path.join(runtimeDir, 'node_modules', '@deepseek-ai', 'dsh')]) {
   if (!fs.existsSync(required)) fail(`missing input: ${required}`)
-}
-
-/**
- * Copy a tree through a predicate, so excluded content is never written instead
- * of being written and then deleted.
- * @param {string} from - source directory or file.
- * @param {string} to - destination path.
- * @param {(source: string) => boolean} [filter] - receives each absolute source path.
- * @returns {void}
- */
-function copyTree(from, to, filter) {
-  fs.cpSync(from, to, {
-    recursive: true,
-    force: true,
-    dereference: true,
-    ...(filter === undefined
-      ? {}
-      : {
-          filter: (source) => {
-            const name = path.basename(source)
-            if (name === 'default_app.asar') return false
-            if (!keepMaps && (name.endsWith('.map') || name.endsWith('.tsbuildinfo'))) return false
-            return filter(source)
-          },
-        }),
-  })
 }
 
 /**
@@ -278,12 +253,15 @@ function main() {
   fs.mkdirSync(outDir, { recursive: true })
 
   // 1. Electron payload at the package root, minus unused locales.
-  console.log('[build] copying Electron payload')
-  copyTree(electronDist, outDir, (source) => {
-    const relative = path.relative(electronDist, source)
-    const [first, second] = relative.split(path.sep)
-    if (first === 'locales' && second !== undefined && !KEPT_LOCALES.has(second)) return false
-    return true
+  copyTreeWithProgress(electronDist, outDir, {
+    label: '[build] copying Electron payload',
+    keepMaps,
+    filter: (source) => {
+      const relative = path.relative(electronDist, source)
+      const [first, second] = relative.split(path.sep)
+      if (first === 'locales' && second !== undefined && !KEPT_LOCALES.has(second)) return false
+      return true
+    },
   })
 
   const originalExe = path.join(outDir, 'electron.exe')
@@ -298,8 +276,8 @@ function main() {
   console.log('[build] writing application')
   const appDir = path.join(outDir, 'resources', 'app')
   fs.mkdirSync(appDir, { recursive: true })
-  copyTree(path.join(projectRoot, 'src'), path.join(appDir, 'src'))
-  copyTree(path.join(projectRoot, 'build'), path.join(appDir, 'build'))
+  copyTree(path.join(projectRoot, 'src'), path.join(appDir, 'src'), { keepMaps })
+  copyTree(path.join(projectRoot, 'build'), path.join(appDir, 'build'), { keepMaps })
   fs.writeFileSync(
     path.join(appDir, 'package.json'),
     `${JSON.stringify(
@@ -317,11 +295,14 @@ function main() {
   )
 
   // 3. dsh runtime, outside the app folder so it can spawn subprocesses freely.
-  console.log('[build] copying dsh runtime (this takes a few minutes)')
+  //    ~1.5 GB across ~140k files, so this is the phase that needs a percentage.
   const runtimeOut = path.join(outDir, 'resources', 'runtime')
   fs.mkdirSync(runtimeOut, { recursive: true })
-  copyTree(path.join(runtimeDir, 'node_modules'), path.join(runtimeOut, 'node_modules'))
-  copyTree(path.join(runtimeDir, 'package.json'), path.join(runtimeOut, 'package.json'))
+  copyTreeWithProgress(path.join(runtimeDir, 'node_modules'), path.join(runtimeOut, 'node_modules'), {
+    label: '[build] copying dsh runtime',
+    keepMaps,
+  })
+  copyTree(path.join(runtimeDir, 'package.json'), path.join(runtimeOut, 'package.json'), { keepMaps })
 
   // 4. Portable marker and the data skeleton. Existing data is left untouched.
   fs.writeFileSync(path.join(outDir, 'portable.marker'), 'DeepSeek Harness portable build\n', 'utf8')

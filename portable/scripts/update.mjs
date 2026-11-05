@@ -10,7 +10,7 @@
  *   node scripts/update.mjs                       # rebuild with current code
  *   node scripts/update.mjs --version 0.2.3       # upgrade the dsh runtime first
  *   node scripts/update.mjs --version latest      # newest published runtime
- *   node scripts/update.mjs --out "G:\AI\deepseek-harness-protable"
+ *   node scripts/update.mjs --out "<package dir>"
  *
  * Exit code 0 means the package was rebuilt, re-signed, and kept its data.
  */
@@ -287,7 +287,7 @@ function main() {
   console.log('  只更新当前代码            : 双击 一键更新.cmd')
   console.log('  顺带升级 dsh 运行时       : 一键更新.cmd --version latest')
   console.log('  指定/回滚运行时版本       : 一键更新.cmd --version 0.2.2-alpha.3')
-  console.log('  更新到别的目录            : 一键更新.cmd --out "G:\\AI\\deepseek-harness-protable"')
+  console.log('  更新到别的目录            : 一键更新.cmd --out "<目录>"')
 
   if (after.dshHome.files !== before.dshHome.files || after.sessions !== before.sessions) {
     console.error('\n[update] 注意：data 内容数量发生变化，请检查 data\\logs 下的日志。')

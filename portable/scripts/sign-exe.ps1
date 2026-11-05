@@ -10,11 +10,18 @@
 # Usage: powershell -NoProfile -ExecutionPolicy Bypass -File scripts\sign-exe.ps1 [-ExePath <path>]
 #
 param(
-  [string]$ExePath = "F:\AI\deepseek-harness-protable\DeepSeek Harness.exe",
+  [string]$ExePath = "",
   [string]$Subject = "CN=JiYuan LvDong Studio, O=JiYuan LvDong, C=CN"
 )
 
 $ErrorActionPreference = "Stop"
+
+# No hard-coded drive letter: mirror build-portable.mjs and default to
+# "<project drive>:\AI\deepseek-harness-protable".
+if (-not $ExePath) {
+  $drive = [System.IO.Path]::GetPathRoot((Split-Path -Parent $PSScriptRoot))
+  $ExePath = Join-Path $drive "AI\deepseek-harness-protable\DeepSeek Harness.exe"
+}
 
 if (-not (Test-Path -LiteralPath $ExePath)) {
   Write-Error "executable not found: $ExePath"

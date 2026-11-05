@@ -2,7 +2,9 @@
 
 把 DeepSeek Harness 的 Web 前端套进 Electron 外壳，做成一个**双击即用、免安装、数据随盘走**的 Windows 便携程序。
 
-产物落在 `F:\AI\deepseek-harness-protable`（注意：目录名沿用用户指定拼写 `protable`）。
+产物默认落在 **源码所在盘符** 的 `\AI\deepseek-harness-protable`——本机源码在 `F:` 盘，所以实际路径是 `F:\AI\deepseek-harness-protable`（目录名沿用最初指定的拼写 `protable`，不是 `portable`）。
+
+盘符只影响**编译时把文件写到哪**，不影响程序本身：产物以 exe 所在目录为根目录，U 盘插到任何电脑、被分配成任何盘符都能直接运行（见下表的「换电脑自动识别路径」）。
 
 ## 它做了什么
 
@@ -48,8 +50,10 @@ deepseek-harness-portable\
 npm install                      # electron@44.7.0 + resedit + sharp
 npm install --prefix runtime @deepseek-ai/dsh@0.2.2-alpha.3
 node scripts/make-icon.mjs       # 生成 build/icon.ico
-node scripts/build-portable.mjs  # 输出到 F:\AI\deepseek-harness-protable
+node scripts/build-portable.mjs  # 输出到 <源码盘符>:\AI\deepseek-harness-protable
 ```
+
+输出目录默认取**源码目录所在盘符** + `\AI\deepseek-harness-protable`，源码在哪个盘就写到哪个盘，脚本里不写死盘符；想换位置加 `--out <目录>`，或用环境变量 `DSH_PORTABLE_OUT` 固定。
 
 `build-portable.mjs` 是**幂等覆盖、从不删除**：不该进包的内容（多余 locale、`*.map`、`default_app.asar`）在复制阶段就被过滤，因此重复构建不会触发批量删除，也不会动 `data\`。
 
@@ -74,12 +78,12 @@ node scripts/build-portable.mjs  # 输出到 F:\AI\deepseek-harness-protable
 一键更新.cmd                                  :: 只更新当前代码
 一键更新.cmd --version latest                 :: 顺带把 dsh 运行时升到 npm 最新版
 一键更新.cmd --version 0.2.2-alpha.3          :: 指定版本（也可用来回滚）
-一键更新.cmd --out "G:\AI\deepseek-harness-protable"
+一键更新.cmd --out "<任意目录>"                 :: 换输出位置（该目录需已有 portable.marker）
 ```
 
 命令行等价写法：`node scripts\update.mjs [--version <ver>] [--out <dir>]`。
 
-**默认目标目录按源码所在盘符推导**（源码在 `G:` 就写 `G:\AI\deepseek-harness-protable`），整个工作区换盘后不用改脚本；也可用环境变量 `DSH_PORTABLE_OUT` 固定。
+不传 `--out` 时用上面「构建」里的默认目录（源码盘符 + `\AI\deepseek-harness-protable`），换盘不用改脚本。
 
 ### 更新的前提
 

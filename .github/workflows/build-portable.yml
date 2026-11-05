@@ -15,6 +15,10 @@
 #
 # Nothing is compiled from the 1.4M-line monorepo: the published npm package
 # already contains the built web frontend that the Electron shell loads.
+#
+# Manual only: there is deliberately no `push` and no `schedule` trigger, so
+# syncing master with upstream never starts a build on its own. Every package
+# comes from the "Run workflow" button in the Actions tab.
 
 name: Build portable (master)
 
@@ -29,11 +33,6 @@ on:
         description: 'Rebuild even when the release already exists.'
         type: boolean
         default: false
-  push:
-    branches:
-      - master
-    paths:
-      - 'package.json'
 
 permissions:
   contents: write
@@ -167,7 +166,7 @@ jobs:
           "release_tag=$releaseTag" >> $env:GITHUB_OUTPUT
 
           $existing = gh release view $releaseTag --repo ${{ github.repository }} 2>$null
-          $force = "${{ inputs.force }}" -eq 'true' -or "${{ github.event_name }}" -eq 'push'
+          $force = "${{ inputs.force }}" -eq 'true'
           if ($existing -and -not $force) {
             Write-Host "release $releaseTag already exists - nothing to do."
             "skip=true" >> $env:GITHUB_OUTPUT

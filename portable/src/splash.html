@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:" />
+    <title>DeepSeek Harness</title>
+    <style>
+      :root { color-scheme: dark; }
+      html, body { height: 100%; margin: 0; }
+      body {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 22px;
+        background: radial-gradient(120% 90% at 50% 0%, #16202b 0%, #0b0f14 55%, #070a0e 100%);
+        color: #e6edf3;
+        font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+        user-select: none;
+      }
+      .mark {
+        width: 56px;
+        height: 56px;
+        border-radius: 16px;
+        background: linear-gradient(140deg, #4d7cfe 0%, #2f5be0 60%, #1f3fae 100%);
+        box-shadow: 0 12px 40px rgba(59, 105, 246, 0.35);
+        animation: breathe 2.6s ease-in-out infinite;
+      }
+      @keyframes breathe {
+        0%, 100% { transform: scale(1); opacity: 0.92; }
+        50% { transform: scale(1.06); opacity: 1; }
+      }
+      h1 { margin: 0; font-size: 22px; font-weight: 600; letter-spacing: 0.2px; }
+      p { margin: 0; font-size: 13px; color: #8b98a5; }
+      .bar {
+        width: 220px;
+        height: 3px;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.08);
+        overflow: hidden;
+      }
+      .bar::after {
+        content: "";
+        display: block;
+        width: 40%;
+        height: 100%;
+        border-radius: 999px;
+        background: linear-gradient(90deg, rgba(77, 124, 254, 0) 0%, #4d7cfe 50%, rgba(77, 124, 254, 0) 100%);
+        animation: slide 1.5s linear infinite;
+      }
+      @keyframes slide {
+        0% { transform: translateX(-100%); }
+        100% { transform: translateX(350%); }
+      }
+      footer { position: fixed; bottom: 18px; font-size: 11px; color: #5b6774; }
+    </style>
+  </head>
+  <body>
+    <div class="mark"></div>
+    <h1>DeepSeek Harness</h1>
+    <p>正在启动本地服务，首次启动稍慢…</p>
+    <div class="bar"></div>
+    <footer>便携版 · 数据保存在 U 盘 data 目录</footer>
+  </body>
+</html>

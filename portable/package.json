@@ -1,0 +1,17 @@
+{
+  "name": "deepseek-harness-portable",
+  "version": "0.2.2",
+  "private": true,
+  "description": "Portable Windows build of DeepSeek Harness: one executable, no installer, all data on the USB stick",
+  "license": "MIT",
+  "main": "src/main.js",
+  "scripts": {
+    "build": "node scripts/build-portable.mjs",
+    "update": "node scripts/update.mjs"
+  },
+  "devDependencies": {
+    "electron": "44.7.0",
+    "resedit": "^2.0.3",
+    "sharp": "^0.35.5"
+  }
+}

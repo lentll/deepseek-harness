@@ -1,0 +1,14 @@
+# Build artefacts and local state never belong in the repository.
+node_modules/
+runtime/node_modules/
+runtime/package-lock.json
+
+# Icon is generated locally by scripts/make-icon.mjs and committed, so CI does
+# not need the sharp toolchain.
+build/icon.png
+
+# Local build output when someone runs the build outside CI.
+out/
+*.7z
+*.zip
+*.pfx

@@ -1,0 +1,258 @@
+# Build the portable Windows package and publish it as a release.
+#
+# Two GitHub behaviours shape this file:
+#   * `schedule` only fires from the repository's DEFAULT branch, so this file
+#     must also exist on `master` — the job itself checks out `protable`.
+#   * every step runs from a `protable` checkout, so the wrapper source and this
+#     workflow always move together.
+#
+# The version to build comes from the upstream release tag (for example
+# `dsh-v0.2.2-rc.1` becomes `0.2.2-rc.1`), which is then installed from npm.
+# Nothing is compiled from the 1.4M-line monorepo: the published npm package
+# already contains the built web frontend that the Electron shell loads.
+
+name: Build portable package
+
+on:
+  schedule:
+    # Daily at 20:00 UTC (04:00 Beijing) — picks up a new upstream release.
+    - cron: '0 20 * * *'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'dsh version to package. Empty = newest upstream dsh-v* release.'
+        required: false
+        default: ''
+      force:
+        description: 'Rebuild even when a release for this version already exists.'
+        type: boolean
+        default: false
+  push:
+    branches:
+      - protable
+    paths:
+      - 'portable/**'
+      - '.github/workflows/portable-build.yml'
+
+permissions:
+  contents: write
+
+# A long build must not cancel one that is halfway through uploading.
+concurrency:
+  group: portable-build
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_REPO: deepseek-ai/deepseek-harness
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      # Job-level so `if:` conditions can test whether signing is configured.
+      SIGNING_PFX_BASE64: ${{ secrets.SIGNING_PFX_BASE64 }}
+      SIGNING_PFX_PASSWORD: ${{ secrets.SIGNING_PFX_PASSWORD }}
+
+    steps:
+      - name: Checkout protable branch
+        uses: actions/checkout@v4
+        with:
+          ref: protable
+          fetch-depth: 1
+
+      - name: Resolve target version
+        id: resolve
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $explicit = "${{ inputs.version }}".Trim()
+
+          if ($explicit) {
+            $version = $explicit -replace '^dsh-v', '' -replace '^v', ''
+            $tag = "manual:$version"
+          } else {
+            # /releases/latest skips prereleases and dsh only ships prereleases,
+            # so list them and take the newest dsh-v* entry.
+            $headers = @{ 'User-Agent' = 'dsh-portable-ci'; 'Accept' = 'application/vnd.github+json' }
+            $releases = Invoke-RestMethod -Headers $headers -Uri "https://api.github.com/repos/$env:UPSTREAM_REPO/releases?per_page=30"
+            $pick = $releases | Where-Object { $_.tag_name -like 'dsh-v*' } | Select-Object -First 1
+            if (-not $pick) { throw "No dsh-v* release found in $env:UPSTREAM_REPO" }
+            $tag = $pick.tag_name
+            $version = $tag -replace '^dsh-v', ''
+          }
+
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+          Write-Host "target: $version (from $tag)"
+
+      - name: Decide whether to build
+        id: decide
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $version = "${{ steps.resolve.outputs.version }}"
+          $releaseTag = "portable-v$version"
+          "release_tag=$releaseTag" >> $env:GITHUB_OUTPUT
+
+          # npm publishing can trail the git tag; installing an unpublished
+          # version would fail, so treat it as "not ready yet".
+          $npmVersion = npm view "@deepseek-ai/dsh@$version" version 2>$null
+          if (-not $npmVersion) {
+            Write-Host "::warning::$version is tagged upstream but not on npm yet - skipping."
+            "skip=true" >> $env:GITHUB_OUTPUT
+            "reason=npm 上还没有 $version，等发布后再跑" >> $env:GITHUB_OUTPUT
+            exit 0
+          }
+
+          $existing = gh release view $releaseTag --repo ${{ github.repository }} 2>$null
+          $force = "${{ inputs.force }}" -eq 'true' -or "${{ github.event_name }}" -eq 'push'
+          if ($existing -and -not $force) {
+            Write-Host "release $releaseTag already exists - nothing to do."
+            "skip=true" >> $env:GITHUB_OUTPUT
+            "reason=$releaseTag 已发布，跳过（勾选 force 可重建）" >> $env:GITHUB_OUTPUT
+            exit 0
+          }
+
+          "skip=false" >> $env:GITHUB_OUTPUT
+          "clobber=$([bool]$existing)" >> $env:GITHUB_OUTPUT
+          "reason=构建 $version" >> $env:GITHUB_OUTPUT
+          Write-Host "building $version (clobber=$([bool]$existing))"
+
+      - name: Setup Node
+        if: steps.decide.outputs.skip != 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: portable/package-lock.json
+
+      - name: Install build dependencies
+        if: steps.decide.outputs.skip != 'true'
+        shell: pwsh
+        run: npm ci --prefix portable --no-audit --no-fund
+
+      - name: Install dsh runtime
+        if: steps.decide.outputs.skip != 'true'
+        shell: pwsh
+        run: |
+          $version = "${{ steps.resolve.outputs.version }}"
+          npm install --prefix portable/runtime "@deepseek-ai/dsh@$version" --no-audit --no-fund
+          node -e "console.log('runtime:', require('./portable/runtime/node_modules/@deepseek-ai/dsh/package.json').version)"
+
+      - name: Import signing certificate
+        if: steps.decide.outputs.skip != 'true' && env.SIGNING_PFX_BASE64 != ''
+        shell: pwsh
+        run: |
+          $pfx = Join-Path $env:RUNNER_TEMP 'portable-signing.pfx'
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:SIGNING_PFX_BASE64))
+          $secure = ConvertTo-SecureString $env:SIGNING_PFX_PASSWORD -AsPlainText -Force
+          Import-PfxCertificate -FilePath $pfx -CertStoreLocation Cert:\CurrentUser\My -Password $secure | Out-Null
+          Write-Host 'signing certificate imported'
+
+      - name: Build portable package
+        if: steps.decide.outputs.skip != 'true'
+        shell: pwsh
+        run: |
+          # The build signs with whatever certificate sits in the store; without
+          # the secret it logs "signature skipped" and carries on.
+          $out = Join-Path $env:GITHUB_WORKSPACE 'out'
+          node portable/scripts/build-portable.mjs --out $out
+
+      - name: Guard - no credentials in the output
+        if: steps.decide.outputs.skip != 'true'
+        shell: pwsh
+        run: |
+          # The archive later drops `data`, but a stray .env or credential file
+          # anywhere else would leak the maintainer's API key into a public
+          # release. Fail loudly instead of shipping it.
+          $out = Join-Path $env:GITHUB_WORKSPACE 'out'
+          $leaks = Get-ChildItem -Path $out -Recurse -Force -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -in @('.env', '.credentials.yaml', 'credentials.json', '.git-credentials') }
+          if ($leaks) {
+            $leaks | ForEach-Object { Write-Host "::error file=$($_.FullName)::credential file in build output" }
+            throw 'credential files found in the build output - refusing to package'
+          }
+          $keyPattern = 'sk-[A-Za-z0-9_-]{20,}'
+          $hits = Get-ChildItem -Path (Join-Path $out 'resources\app') -Recurse -File -ErrorAction SilentlyContinue |
+            Select-String -Pattern $keyPattern -List -ErrorAction SilentlyContinue
+          if ($hits) {
+            $hits | ForEach-Object { Write-Host "::error file=$($_.Path)::possible API key literal" }
+            throw 'possible API key found in shipped sources'
+          }
+          Write-Host 'no credential files or key literals in the output'
+
+      - name: Package archive
+        id: pack
+        if: steps.decide.outputs.skip != 'true'
+        shell: pwsh
+        run: |
+          $version = "${{ steps.resolve.outputs.version }}"
+          $archive = Join-Path $env:GITHUB_WORKSPACE "DeepSeek-Harness-portable-$version.7z"
+
+          $sevenZip = (Get-Command 7z.exe -ErrorAction SilentlyContinue).Source
+          if (-not $sevenZip) { $sevenZip = Join-Path $env:ProgramFiles '7-Zip\7z.exe' }
+          if (-not (Test-Path $sevenZip)) { throw '7-Zip not found on the runner' }
+
+          $source = Join-Path $env:GITHUB_WORKSPACE 'out\*'
+          # `data` holds user state (sessions, API key, caches) and must never
+          # ship; the app recreates the folder skeleton on first launch.
+          # Anchor the exclusion to the archive root: a bare `-xr!data` would
+          # also strip nested `data` folders inside the shipped runtime.
+          & $sevenZip a -t7z -mx=5 $archive $source '-x!data\*' | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "7z failed with exit code $LASTEXITCODE" }
+
+          $mb = [math]::Round((Get-Item $archive).Length / 1MB, 1)
+          "archive=$archive" >> $env:GITHUB_OUTPUT
+          "size_mb=$mb" >> $env:GITHUB_OUTPUT
+          Write-Host "archive: $archive ($mb MB)"
+
+      - name: Publish release
+        if: steps.decide.outputs.skip != 'true'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $version = "${{ steps.resolve.outputs.version }}"
+          $tag = "${{ steps.decide.outputs.release_tag }}"
+          $archive = "${{ steps.pack.outputs.archive }}"
+
+          $notes = @(
+            "Portable Windows build of DeepSeek Harness $version.",
+            "",
+            "- Upstream tag: ${{ steps.resolve.outputs.tag }}",
+            "- Runtime: @deepseek-ai/dsh@$version (published npm package, not compiled from source)",
+            "- Shell source: portable/ on the protable branch, commit ${{ github.sha }}",
+            "- No installer: unpack, run DeepSeek Harness.exe, keep the folder on the USB stick.",
+            "- No user data inside: set the model endpoint under Settings - Models on first run."
+          ) -join "`n"
+
+          $ghArgs = @('release')
+          if ("${{ steps.decide.outputs.clobber }}" -eq 'True') {
+            $ghArgs += @('upload', $tag, $archive, '--repo', '${{ github.repository }}', '--clobber')
+          } else {
+            $ghArgs += @('create', $tag, $archive, '--repo', '${{ github.repository }}', '--title', "Portable $version", '--notes', $notes)
+            if ($version -match '-') { $ghArgs += '--prerelease' }
+          }
+
+          & gh @ghArgs
+          if ($LASTEXITCODE -ne 0) { throw "gh failed with exit code $LASTEXITCODE" }
+
+      - name: Summary
+        if: always()
+        shell: pwsh
+        run: |
+          $lines = @(
+            '## Portable build',
+            '',
+            '| 项 | 值 |',
+            '|---|---|',
+            "| 版本 | ${{ steps.resolve.outputs.version }} |",
+            "| 上游 tag | ${{ steps.resolve.outputs.tag }} |",
+            "| 结果 | ${{ steps.decide.outputs.skip == 'true' && '已跳过' || '已构建' }} |",
+            "| 说明 | ${{ steps.decide.outputs.reason }} |",
+            "| 归档 | ${{ steps.pack.outputs.size_mb }} MB |",
+            "| 签名 | ${{ env.SIGNING_PFX_BASE64 != '' && '已配置证书' || '未配置，已跳过' }} |"
+          )
+          $lines -join "`n" >> $env:GITHUB_STEP_SUMMARY

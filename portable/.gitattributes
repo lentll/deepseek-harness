@@ -1,0 +1,8 @@
+# Keep line endings sane across Windows runners and Linux checkouts.
+# .cmd and .ps1 must stay CRLF: batch files with bare LF can break goto labels.
+* text=auto
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+*.sh text eol=lf
+*.ico binary
+*.pfx binary

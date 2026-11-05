@@ -96,7 +96,7 @@ node scripts/build-portable.mjs  # 输出到 <源码盘符>:\AI\deepseek-harness
 一键更新.cmd                                  :: 只更新当前代码
 一键更新.cmd --version latest                 :: 顺带把 dsh 运行时升到 npm 最新版
 一键更新.cmd --version <版本号>               :: 指定版本（也可用来回滚）
-一键更新.cmd --out "<任意目录>"                 :: 换输出位置（该目录需已有 portable.marker）
+一键更新.cmd --out "<任意目录>"               :: 换输出位置（该目录需已有 portable.marker）
 ```
 
 命令行等价写法：`node scripts\update.mjs [--version <ver>] [--out <dir>]`。
@@ -142,12 +142,24 @@ node scripts/build-portable.mjs  # 输出到 <源码盘符>:\AI\deepseek-harness
 
 - **上游是谁**：`env.UPSTREAM_REPO` 指向官方仓 `deepseek-ai/deepseek-harness`，按它的 release 列表取最新 `dsh-v*`（`/releases/latest` 会跳过 prerelease，而 dsh 只发 prerelease，所以列出来自己挑）。fork 的 `master` 只是上游旧快照，**不需要同步**，也不参与出包。
 - **分支形态**：`protable` 是**独立根分支**（不含上游代码），只放 `portable/` 与 workflow。原因：本机到 GitHub 仅约 33 KB/s，完整克隆 353 MB 的上游仓库不现实，独立分支只有约 200 KB，CI 检出也快。
-- **定时任务的前提**：GitHub 的 `schedule` 只认默认分支上的 workflow。fork 的默认分支目前仍是 `master`，而 `master` 上没有这个 workflow，所以**定时触发还没生效**；要么把 `protable` 设为默认分支，要么把同一份 workflow 贴到 master。在此之前只有手动 Run 或 push 到 `protable` 会触发。
+- **定时任务的前提**：GitHub 的 `schedule` 只认默认分支上的 workflow。fork 的默认分支目前仍是 `master`，而 `master` 上没有**这份** workflow，所以 `schedule` 还没生效；要么把 `protable` 设为默认分支，要么把同一份贴到 master。日常手动出包不用管这个——用 master 上的 **Build portable (master)** 即可（见下）。
 - **三条触发**：每天 20:00 UTC 拉上游最新 `dsh-v*` release tag；手动 `workflow_dispatch`（可指定版本 / `force`）；push 到 `protable` 自动重建。
 - **版本映射**：GitHub tag `dsh-v0.2.2-rc.1` → npm 包 `0.2.2-rc.1`；tag 已打但 npm 未发布时任务跳过并告警。
 - **产物**：Release `portable-v<版本>` + `DeepSeek-Harness-portable-<版本>.7z`（**排除 `data/`**，因此不含任何 API Key）。
 - **去敏守卫**：打包前扫描 `out\resources\app`，发现 `.env`、`.credentials.yaml` 或 `sk-xxxx` 明文即构建失败。
 - **签名**：`SIGNING_PFX_BASE64` / `SIGNING_PFX_PASSWORD` 两个 secret 存在则签名，否则跳过。
+
+### 从主仓库一键构建（master 上的 build-portable.yml）
+
+`master` 上另有一份 `.github/workflows/build-portable.yml`，让「更新主仓库后一键出包」不依赖切默认分支：
+
+- **入口**：Actions → **Build portable (master)** → Run workflow。默认分支就是 master，所以按钮一直在。
+- **版本**：填 `version` 就用它（不在 npm 上直接报错）；不填则取「本分支 `package.json` 版本」与「上游最新 `dsh-v*`」中较大的那个，若它还没发到 npm 就自动退回另一个——master 经常带着「已合并、未发布」的版本号。
+- **外壳仍来自 protable**：先 checkout master 读版本，再把 `protable` 检出到 `portable-src/` 构建，上游源码与外壳不混在一起。
+- **自动触发**：master 的 `package.json` 变动时（比如 Sync fork 同步了上游）自动跑；同名 Release 已存在则跳过，push 触发或勾 `force` 时覆盖附件。
+- **不要自动跑**：删掉该文件的 `on: push:` 段，只留 `workflow_dispatch` 即可。
+
+文件本地副本在 `ci/build-portable.yml`（改完贴回 GitHub），`ci/_test-semver.ps1` 与 `ci/_test-resolve.ps1` 是版本比较、版本选择的离线单测（12 + 6 条断言），逻辑改动后先跑这两个。
 
 ## 运行机制
 

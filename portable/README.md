@@ -64,12 +64,14 @@ deepseek-harness-portable\
 
 ```sh
 npm install                      # electron@44.7.0 + resedit + sharp
-npm install --prefix runtime @deepseek-ai/dsh@0.2.2-alpha.3
+npm install --prefix runtime @deepseek-ai/dsh@0.2.2-rc.1   # 当前出包版本；换版本见下
 node scripts/make-icon.mjs       # 生成 build/icon.ico
 node scripts/build-portable.mjs  # 输出到 <源码盘符>:\AI\deepseek-harness-protable
 ```
 
 输出目录默认取**源码目录所在盘符** + `\AI\deepseek-harness-protable`，源码在哪个盘就写到哪个盘，脚本里不写死盘符；想换位置加 `--out <目录>`，或用环境变量 `DSH_PORTABLE_OUT` 固定。
+
+版本号取自**官方仓**的 release tag：`dsh-v0.2.2-rc.1` → `0.2.2-rc.1`（去掉 `dsh-v` 前缀）。本地要跟新版就改上面那行版本号再跑；CI 则每天自动取官方最新。
 
 `build-portable.mjs` 是**幂等覆盖、从不删除**：不该进包的内容（多余 locale、`*.map`、`default_app.asar`）在复制阶段就被过滤，因此重复构建不会触发批量删除，也不会动 `data\`。
 
@@ -93,7 +95,7 @@ node scripts/build-portable.mjs  # 输出到 <源码盘符>:\AI\deepseek-harness
 ```bat
 一键更新.cmd                                  :: 只更新当前代码
 一键更新.cmd --version latest                 :: 顺带把 dsh 运行时升到 npm 最新版
-一键更新.cmd --version 0.2.2-alpha.3          :: 指定版本（也可用来回滚）
+一键更新.cmd --version <版本号>               :: 指定版本（也可用来回滚）
 一键更新.cmd --out "<任意目录>"                 :: 换输出位置（该目录需已有 portable.marker）
 ```
 

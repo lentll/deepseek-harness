@@ -89,17 +89,22 @@ check('callbacks are wired to the matching items', () => {
 })
 
 console.log('trayTooltip() / hiddenNotice()')
-check('tooltip names the app, the version and the double-click', () => {
+check('tooltip names the app, the version and the single click', () => {
   const text = trayTooltip({ title: 'DeepSeek Harness', version: '1.2.3' })
   assert.ok(text.includes('DeepSeek Harness'))
   assert.ok(text.includes('1.2.3'))
-  assert.ok(text.includes('双击'))
+  assert.ok(text.includes('单击'))
 })
 check('the one-time notice explains both ways back', () => {
   const text = hiddenNotice('DeepSeek Harness')
   assert.ok(text.includes('托盘'))
   assert.ok(text.includes('退出'))
+  assert.ok(text.includes('单击'))
   assert.ok(text.includes('DeepSeek Harness'))
+})
+check('no hint anywhere still asks for a double-click', () => {
+  const texts = [trayTooltip({ title: 'T', version: '1' }), hiddenNotice('T')]
+  for (const text of texts) assert.equal(text.includes('双击'), false, `stale hint: ${text}`)
 })
 
 console.log('main.js wiring')
@@ -119,6 +124,22 @@ check('the close handler consults closeAction()', () => {
 })
 check('the tray menu is built from the shared template', () => {
   assert.ok(mainCode.includes('trayMenuTemplate({'))
+})
+check('a single left click restores the window', () => {
+  assert.ok(mainCode.includes("tray.on('click', () => showMainWindow())"), 'click handler missing')
+})
+check('the tray icon is not a double-click control', () => {
+  assert.equal(
+    mainCode.includes("'double-click'"),
+    false,
+    'a double-click handler duplicates the click handler on Windows',
+  )
+})
+check('restoring from the tray lifts the window to the front', () => {
+  // show() alone leaves the window behind the foreground app on Windows, which
+  // reads to the user as "my click did nothing".
+  assert.ok(mainCode.includes('setAlwaysOnTop(true)'))
+  assert.ok(mainCode.includes('setAlwaysOnTop(false)'))
 })
 
 console.log(`\npassed ${passed}, failed ${failed}`)

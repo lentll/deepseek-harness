@@ -94,11 +94,24 @@ function isLocalUrl(url) {
   return /^http:\/\/127\.0\.0\.1:\d+(?:[/?#]|$)/i.test(url)
 }
 
-/** Bring the window back from the tray, restoring it if it was minimised. */
+/**
+ * Bring the window back from the tray, restoring it if it was minimised.
+ *
+ * Showing a hidden window is not always enough on Windows: the process that
+ * owns a tray icon is not the foreground process, so `show()` can leave the
+ * window behind whatever the user was looking at. It then looks like the click
+ * did nothing, and the second click of an impatient double-click is what
+ * appears to "work". A one-shot always-on-top toggle lifts it above the current
+ * foreground window and is reverted immediately, so nothing stays pinned.
+ */
 function showMainWindow() {
   if (mainWindow === undefined) return
   if (mainWindow.isMinimized()) mainWindow.restore()
   mainWindow.show()
+  if (!mainWindow.isFocused() && process.platform === 'win32') {
+    mainWindow.setAlwaysOnTop(true)
+    mainWindow.setAlwaysOnTop(false)
+  }
   mainWindow.focus()
 }
 
@@ -137,8 +150,11 @@ function createTray() {
         }),
       ),
     )
+    // A single left click is the whole gesture. Windows reports the first click
+    // of a rapid double click here too, so a second listener for the double
+    // click event would just run the same code twice — the icon is not a
+    // "double-click me" control and must not depend on a second click.
     tray.on('click', () => showMainWindow())
-    tray.on('double-click', () => showMainWindow())
     trayReady = true
     log('tray ready')
   } catch (error) {
@@ -291,6 +307,29 @@ async function boot() {
       `windows=${BrowserWindow.getAllWindows().length}`
     log(line)
     fs.writeFileSync(path.join(dirs.logs, 'close-test.txt'), `${line}\n`, 'utf8')
+    app.quit()
+  }
+
+  // Diagnostic hook: `DSH_PORTABLE_TRAY_TEST=1` hides the window the way the X
+  // does, publishes the tray icon rectangle, then records whether the window
+  // came back. An external driver clicks that rectangle with a real mouse event,
+  // so a passing run proves the icon answers a *single* click; emitting
+  // `tray.emit('click')` here would only prove the handler is wired.
+  if (process.env.DSH_PORTABLE_TRAY_TEST === '1') {
+    const visibleBefore = mainWindow.isVisible()
+    const bounds = trayReady ? tray?.getBounds() : undefined
+    const boundsFile = path.join(dirs.logs, 'tray-test-bounds.json')
+    fs.writeFileSync(boundsFile, JSON.stringify(bounds ?? null), 'utf8')
+    mainWindow.close()
+    const deadline = Date.now() + 15000
+    while (mainWindow !== undefined && !mainWindow.isVisible() && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 200))
+    }
+    const line =
+      `tray test: tray=${trayReady} bounds=${JSON.stringify(bounds)} ` +
+      `visibleBefore=${visibleBefore} visibleAfterClick=${mainWindow?.isVisible() ?? false}`
+    log(line)
+    fs.writeFileSync(path.join(dirs.logs, 'tray-test.txt'), `${line}\n`, 'utf8')
     app.quit()
   }
 }

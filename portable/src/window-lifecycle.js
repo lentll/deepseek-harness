@@ -50,7 +50,7 @@ function trayMenuTemplate({ onShow, onOpenLogs, onQuit }) {
  * @returns {string} tooltip text.
  */
 function trayTooltip({ title, version }) {
-  return `${title} ${version} · 双击图标打开窗口`
+  return `${title} ${version} · 单击图标打开窗口`
 }
 
 /**
@@ -60,7 +60,7 @@ function trayTooltip({ title, version }) {
  * @returns {string} notification body.
  */
 function hiddenNotice(title) {
-  return `${title} 仍在后台运行：双击托盘图标可重新打开，右键托盘图标可退出。`
+  return `${title} 仍在后台运行：单击托盘图标可重新打开，右键托盘图标可退出。`
 }
 
 module.exports = { closeAction, trayMenuTemplate, trayTooltip, hiddenNotice }

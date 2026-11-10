@@ -211,7 +211,8 @@ const instructions = `DeepSeek Harness 便携版（U 盘版）
     dsh-home\\              会话、设置、凭据、插件档案（$DSH_HOME）
     agents\\                共享的 Agent 配置（$DSH_AGENTS_HOME）
     documents\\             默认工作区的父目录（代替本机的“文档”目录）
-    workspace\\             从别的电脑或别的盘搬回来的工作区
+    workspace\\             从别的电脑或别的盘搬回来的工作区（技能装在这里）
+    home\\                  便携用户目录（$HOME）：SkillHub、.openclaw、Git 身份
     pnpm\\                  插件与技能的安装缓存
     electron\\              窗口的浏览器配置与缓存
     logs\\                  运行日志（启动失败时先看这里）
@@ -222,6 +223,10 @@ const instructions = `DeepSeek Harness 便携版（U 盘版）
   说明：默认工作区、Skill 商店装的技能、插件，都会落在 data 里。
   打开程序时左侧栏的“默认工作区”就是 data\\documents\\deepseek-harness\\default-workspace，
   不需要另行选择目录。
+  程序把自己看到的“用户目录”（$HOME）也指向 data\\home，所以 SkillHub
+  的 CLI、配置（.skillhub）、可执行入口（.local\\bin）以及 .openclaw 都在
+  盘内；技能本身按安装时所在的目录走，在默认工作区里装就落在
+  data\\workspace\\default-workspace\\skills。
 
 
 三、换电脑 / 换盘符
@@ -240,11 +245,16 @@ const instructions = `DeepSeek Harness 便携版（U 盘版）
   本程序只写 data 目录，不写注册表，不写系统用户目录：
   - 浏览器配置、缓存、崩溃转储、日志、临时文件全部重定向到 data\\；
   - 插件与技能的 pnpm 安装缓存也在 data\\pnpm\\；
+  - 任何“用户目录”解析（$HOME）都指向 data\\home，
+    SkillHub 不会再把 .skillhub、.local\\bin、.openclaw 写到 C 盘；
   - 运行结束后不会在 C 盘留下用户数据；
   - 运行时若在本机建了一个空的 ~\\.dsh 目录，程序退出前会自动清掉
     （只删空目录，目录里只要有任意文件就不动）；
   - 拔掉 U 盘，本机不留应用痕迹
     （Windows 自身的“最近使用程序”记录属于系统行为，与本程序无关）。
+
+  唯一一次“从本机取东西”：首次启动时若 data\\home\\.gitconfig 不存在而
+  本机有，就复制一份到盘内，让 git 提交仍有身份；之后不再覆盖。
 
 
 五、升级
@@ -267,11 +277,16 @@ const instructions = `DeepSeek Harness 便携版（U 盘版）
 
 七、删除会话
   官方只提供“归档会话”（藏起来，日志仍占盘）。要真正删掉一条记录：
-  1) 在侧边栏会话名上点右侧的“…”菜单；
+  1) 在侧边栏的会话行上点右键，或点行右侧的“…”按钮；
   2) 菜单最下面一项是“删除会话”（红色，带垃圾桶图标）；
   3) 确认框默认是“取消”，点“删除”才会删。
+  点完“删除”，那一行会立刻从列表里消失；程序随后在后台重启本地服务
+  （约 5-7 秒，会看到启动画面），重启完列表与磁盘一致。
+  之所以要重启：服务把会话索引放在内存里，只刷新页面的话那一行会回来。
   删除会移除 data\\dsh-home\\sessions\\ 下这一个会话目录，并把它的登记
   信息一并清掉；会话里生成的文件（在工作区目录里）不会被删。
+  注意：列表里那行“新会话”是当前工作区的占位行（它右边没有“…”按钮，
+  右键也没有菜单），删掉也会被立刻重建，所以不提供删除。
   删除后程序会重启内部服务，界面约 7 秒后自动刷新，列表就与磁盘一致。
 `
 

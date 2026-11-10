@@ -7,14 +7,15 @@
  * entry to the row menu the application already renders, and nothing else:
  *
  *   - the Session id comes from the row's own `data-row-key="session:<id>"`,
- *     captured when the row's menu trigger is pressed, so the entry always
- *     targets the row the user right-clicked;
+ *     captured when the row is right-clicked or its menu trigger is pressed, so
+ *     the entry always targets the row the user acted on;
  *   - the entry is cloned from the existing archive entry, so it inherits the
  *     menu's classes, spacing, icon slot and hover behaviour instead of
  *     re-implementing the design;
  *   - the click is handed to the host through the preload bridge, the host
- *     confirms with a native dialog, and only a confirmed delete reloads the
- *     page so the list reflects the disk.
+ *     confirms with a native dialog, and the row is dropped from the list as
+ *     soon as the host answers — the host then restarts dsh in the background,
+ *     which reloads the page once the new server is up.
  *
  * The fragment is idempotent: re-injecting on the same document is a no-op, and
  * a menu that does not belong to a Session is left untouched.
@@ -31,6 +32,14 @@
   let targetId = ''
   let targetTitle = ''
 
+  /** Remember the Session a row stands for. */
+  function rememberRow(row) {
+    const key = row.getAttribute('data-row-key') ?? ''
+    targetId = key.startsWith(SESSION_PREFIX) ? key.slice(SESSION_PREFIX.length) : ''
+    const titleNode = row.querySelector('[class*="title"]')
+    targetTitle = titleNode === null ? '' : (titleNode.textContent ?? '').trim()
+  }
+
   /** Remember which Session owns the menu that is about to open. */
   function remember(trigger) {
     const row = trigger.closest('[data-row-key^="' + SESSION_PREFIX + '"]')
@@ -39,10 +48,7 @@
       targetTitle = ''
       return
     }
-    const key = row.getAttribute('data-row-key') ?? ''
-    targetId = key.slice(SESSION_PREFIX.length)
-    const titleNode = row.querySelector('[class*="title"]')
-    targetTitle = titleNode === null ? '' : (titleNode.textContent ?? '').trim()
+    rememberRow(row)
   }
 
   // Capture phase: the row records the target before any menu mounts, and a
@@ -54,6 +60,27 @@
       const trigger = event.target instanceof Element ? event.target.closest('[data-context-menu-trigger]') : null
       if (trigger === null) return
       remember(trigger)
+    },
+    true,
+  )
+
+  // A right click on the row opens the same menu through the row's own
+  // handler, without ever touching the `…` button. Nothing here opens or
+  // blocks the menu — it only records which Session it belongs to, which is
+  // what the entry needs when the menu mounts a tick later. A right click
+  // outside every row clears the target, so a menu opened elsewhere can never
+  // inherit a stale one.
+  document.addEventListener(
+    'contextmenu',
+    (event) => {
+      if (!(event.target instanceof Element)) return
+      const row = event.target.closest('[data-row-key^="' + SESSION_PREFIX + '"]')
+      if (row === null) {
+        targetId = ''
+        targetTitle = ''
+        return
+      }
+      rememberRow(row)
     },
     true,
   )
@@ -75,7 +102,23 @@
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
   }
 
-  /** Hand one confirmed delete to the host, then reload so the list matches disk. */
+  /**
+   * Take the row out of the list as soon as the host confirms the delete.
+   *
+   * The host restarts dsh afterwards, which reloads this page a few seconds
+   * later; until then the row would sit there looking untouched, so the click
+   * would feel ignored. Hiding it keeps the feedback immediate without
+   * pretending the work is done — the reload is what makes it durable.
+   *
+   * @param {string} id - Session id whose row should disappear.
+   */
+  function hideRow(id) {
+    for (const row of document.querySelectorAll('[data-row-key="' + SESSION_PREFIX + id + '"]')) {
+      row.style.display = 'none'
+    }
+  }
+
+  /** Hand one confirmed delete to the host, then drop the row from the list. */
   async function remove() {
     const id = targetId
     if (id.length === 0) return
@@ -87,11 +130,15 @@
     }
     try {
       const outcome = await bridge.deleteSession(id, targetTitle)
-      // The host restarts the runtime after a delete, which already reloads this
-      // page; `reloaded` says so. Only a host that could not restart leaves the
-      // stale list on screen, and then a plain reload is the best fallback.
-      if (outcome?.deleted === true && outcome.reloaded !== true) window.location.reload()
-      else if (outcome?.deleted !== true && outcome?.reason !== 'cancelled') console.warn('portable: delete skipped:', outcome?.reason)
+      if (outcome?.deleted === true) {
+        hideRow(id)
+        // The host restarts the runtime after answering, and that restart
+        // reloads this page; a host that cannot restart says so, and then a
+        // plain reload is the only way the stale row stays gone.
+        if (outcome.restarting !== true && outcome.reloaded !== true) window.location.reload()
+      } else if (outcome?.reason !== 'cancelled') {
+        console.warn('portable: delete skipped:', outcome?.reason)
+      }
     } catch (error) {
       console.error('portable: delete failed', error)
     }

@@ -23,6 +23,7 @@ const {
   portableEnvironment,
   ensureProfileOverlay,
   pruneEmptyDirectory,
+  seedPortableHome,
 } = require('./portable')
 const { migratePortablePaths } = require('./path-migration')
 const { repairWorkspaces } = require('./workspace-repair')
@@ -319,6 +320,11 @@ async function restartRuntime() {
 async function boot() {
   log(`portable root: ${root}`)
 
+  // `$HOME` points at `data\home`, so Git reads its identity from the stick.
+  // The host's file is copied once, on first run, and never overwritten.
+  const seeded = seedPortableHome(dirs)
+  if (seeded.length > 0) log(`portable home seeded: ${seeded.join(', ')}`)
+
   const migration = migratePortablePaths(dirs, APP_VERSION)
   if (migration.moved) {
     log(`paths migrated: ${migration.from} -> ${migration.to} (${migration.filesChanged ?? 0} files)`)
@@ -427,6 +433,132 @@ async function boot() {
     app.quit()
   }
 
+  // Diagnostic hook: `DSH_PORTABLE_SEND_PROBE=<file.json>` types one short
+  // message into the composer and sends it, so a verification run has a
+  // non-blank Session to exercise the row menu with. Ordinary launches ignore
+  // it; it writes to the same data folder as a normal run.
+  const sendTarget = process.env.DSH_PORTABLE_SEND_PROBE
+  if (sendTarget !== undefined && sendTarget.length > 0) {
+    const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+    const js = (code) => mainWindow.webContents.executeJavaScript(code).catch((error) => `error: ${error.message}`)
+    const report = { steps: [] }
+    await wait(5000)
+    report.composer = await js(`(() => {
+      const areas = [...document.querySelectorAll('textarea, [contenteditable="true"], [role="textbox"]')]
+        .map((n) => ({ tag: n.tagName, cls: String(n.className).slice(0, 50), aria: n.getAttribute('aria-label'), placeholder: n.getAttribute('placeholder') }))
+      const buttons = [...document.querySelectorAll('button')]
+        .map((b) => ({ aria: b.getAttribute('aria-label'), title: b.getAttribute('title'), text: (b.innerText || '').trim().slice(0, 12), disabled: b.disabled }))
+        .filter((b) => b.aria !== null || b.title !== null || b.text.length > 0)
+      return { areas, buttons: buttons.slice(0, 30) }
+    })()`)
+    report.typed = await js(`(() => {
+      const area = document.querySelector('[role="textbox"], textarea, [contenteditable="true"]')
+      if (area === null) return 'no-composer'
+      area.focus()
+      if (area.tagName === 'TEXTAREA') {
+        const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set
+        setter.call(area, '你好')
+        area.dispatchEvent(new Event('input', { bubbles: true }))
+      } else {
+        // A contenteditable is driven by beforeinput/input, so typing through
+        // the selection model is the only way React sees the change.
+        document.execCommand('insertText', false, '你好')
+      }
+      return { tag: area.tagName, text: (area.innerText ?? '').trim(), length: (area.innerText ?? '').length }
+    })()`)
+    await wait(1200)
+    report.sent = await js(`(() => {
+      const labels = [...document.querySelectorAll('button')].map((b) => (b.getAttribute('aria-label') || '') + '|' + (b.getAttribute('title') || ''))
+      const button = [...document.querySelectorAll('button')].find((b) => /send|发送/i.test((b.getAttribute('aria-label') || '') + ' ' + (b.getAttribute('title') || '')) && !b.disabled)
+      if (button !== undefined) {
+        button.click()
+        return { via: 'button', labels }
+      }
+      const area = document.querySelector('[role="textbox"], textarea, [contenteditable="true"]')
+      if (area === null) return { via: 'none', labels }
+      for (const type of ['keydown', 'keyup']) {
+        area.dispatchEvent(new KeyboardEvent(type, { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true }))
+      }
+      return { via: 'enter', labels }
+    })()`)
+    await wait(20000)
+    report.rows = await js(`(() => {
+      const rows = [...document.querySelectorAll('[data-row-key^="session:"]')]
+      return rows.map((row) => ({
+        key: row.getAttribute('data-row-key'),
+        title: (row.querySelector('[class*="title"]')?.textContent ?? '').trim(),
+        hasActions: Boolean(row.querySelector('[class*="rowActions"]'))
+      }))
+    })()`)
+    fs.writeFileSync(sendTarget, JSON.stringify(report, null, 2), 'utf8')
+    log(`wrote composer report to ${sendTarget}`)
+    app.quit()
+  }
+
+  // Diagnostic hook: `DSH_PORTABLE_CTX_PROBE=<file.json>` answers one question
+  // with evidence: does a right click on a Session row open the same menu the
+  // row's `…` button opens? Ordinary launches ignore it.
+  const ctxTarget = process.env.DSH_PORTABLE_CTX_PROBE
+  if (ctxTarget !== undefined && ctxTarget.length > 0) {
+    const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+    const js = (code) => mainWindow.webContents.executeJavaScript(code).catch((error) => `error: ${error.message}`)
+    const report = {}
+    await wait(4500)
+    report.row = await js(`(() => {
+      const rows = [...document.querySelectorAll('[data-row-key^="session:"]')]
+      return {
+        count: rows.length,
+        rows: rows.map((row) => ({
+          key: row.getAttribute('data-row-key'),
+          title: (row.querySelector('[class*="title"]')?.textContent ?? '').trim(),
+          hasActions: Boolean(row.querySelector('[class*="rowActions"]')),
+          hasTrigger: Boolean(row.querySelector('[data-context-menu-trigger]'))
+        }))
+      }
+    })()`)
+    // Right click in the middle of the row, the way a user does.
+    report.rightClickRow = await js(`(() => {
+      const rows = [...document.querySelectorAll('[data-row-key^="session:"]')]
+      const row = rows.find((candidate) => candidate.querySelector('[class*="rowActions"]')) ?? rows[0]
+      if (!row) return 'no-row'
+      const box = row.getBoundingClientRect()
+      const x = Math.round(box.x + box.width / 2)
+      const y = Math.round(box.y + box.height / 2)
+      const hit = document.elementFromPoint(x, y) ?? row
+      const event = new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: x, clientY: y, button: 2, buttons: 2 })
+      const notCancelled = hit.dispatchEvent(event)
+      return { key: row.getAttribute('data-row-key'), hitTag: hit.tagName, hitClass: String(hit.className).slice(0, 60), cancelled: notCancelled === false, x, y }
+    })()`)
+    await wait(900)
+    report.menuAfterRow = await js(`(() => {
+      const menu = document.querySelector('[role="menu"][data-context-menu]')
+      if (!menu) return 'no-menu'
+      return [...menu.querySelectorAll('[role="menuitem"]')].map((n) => (n.innerText || '').split('\\n')[0].trim())
+    })()`)
+    // Close whatever opened, then right click the `…` trigger itself.
+    await js(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`)
+    await wait(400)
+    report.rightClickTrigger = await js(`(() => {
+      const trigger = document.querySelector('[data-row-key^="session:"] [data-context-menu-trigger]')
+      if (!trigger) return 'no-trigger'
+      const box = trigger.getBoundingClientRect()
+      const x = Math.round(box.x + box.width / 2)
+      const y = Math.round(box.y + box.height / 2)
+      const event = new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: x, clientY: y, button: 2, buttons: 2 })
+      const notCancelled = trigger.dispatchEvent(event)
+      return { cancelled: notCancelled === false, x, y }
+    })()`)
+    await wait(900)
+    report.menuAfterTrigger = await js(`(() => {
+      const menu = document.querySelector('[role="menu"][data-context-menu]')
+      if (!menu) return 'no-menu'
+      return [...menu.querySelectorAll('[role="menuitem"]')].map((n) => (n.innerText || '').split('\\n')[0].trim())
+    })()`)
+    fs.writeFileSync(ctxTarget, JSON.stringify(report, null, 2), 'utf8')
+    log(`wrote right-click report to ${ctxTarget}`)
+    app.quit()
+  }
+
   // Diagnostic hook: `DSH_PORTABLE_DELETE_PROBE=<file.json>` walks the whole
   // delete path the way a user does — open the row menu, read the entries,
   // click the injected one — and records what happened. It pairs with
@@ -474,9 +606,27 @@ async function boot() {
       return
     }
 
-    // The host restarts the runtime before it answers, so the page navigates
-    // mid-call: poll until the injected patch is back on a loaded document
-    // instead of assuming a fixed delay.
+    // The row must leave the list before the restart, not after it: sample the
+    // DOM right after the click and record the first moment the row is hidden.
+    const clickedAt = Date.now()
+    report.hiddenAfterMs = null
+    for (let attempt = 0; attempt < 60; attempt += 1) {
+      await wait(200)
+      const probe = await js(`({
+        original: performance.timeOrigin === ${report.beforeDelete},
+        hidden: [...document.querySelectorAll('[data-row-key^="session:"]')].some((row) => row.style.display === 'none')
+      })`)
+      if (typeof probe !== 'object') continue
+      if (probe.hidden === true) {
+        report.hiddenAfterMs = Date.now() - clickedAt
+        break
+      }
+      if (probe.original === false) break
+    }
+
+    // The host restarts the runtime in the background after answering, so the
+    // page navigates a moment later: poll until the injected patch is back on a
+    // loaded document instead of assuming a fixed delay.
     report.afterReload = { pending: true }
     for (let attempt = 0; attempt < 40; attempt += 1) {
       await wait(1000)
@@ -581,7 +731,7 @@ if (!app.requestSingleInstanceLock({ root })) {
       log,
       icon: nativeImage.createFromPath(buildAsset('icon.ico')),
       stopRuntime,
-      startRuntime: restartRuntime,
+      restartRuntime,
     })
     try {
       await boot()

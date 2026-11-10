@@ -45,6 +45,9 @@ deepseek-harness-portable\
     workspace-repair.js   把默认/失效工作区搬回盘内（只复制不删除）
     dsh-server.js         启动 dsh Web 服务（ELECTRON_RUN_AS_NODE）、解析带 token 的 URL
     path-migration.js     换盘/换机后的绝对路径自愈
+    preload.js            向页面只暴露 deleteSession 一个方法
+    session-menu.js       宿主侧删除：id 校验、目录定位、状态清理、后台重启
+    session-menu-injected.js  注入页面：给会话菜单补「删除会话」
     splash.html           启动画面
   scripts\
     build-portable.mjs    组装最终产物
@@ -58,7 +61,8 @@ deepseek-harness-portable\
   dsh-home\               DSH_HOME：profiles（含 patch 覆盖）、sessions、skills、storages
   agents\                 DSH_AGENTS_HOME
   documents\              冒充系统「文档」目录，dsh 首次创建的默认工作区落在这里
-  workspace\              从主机搬来的工作区
+  workspace\              从主机搬来的工作区（技能装在 <工作区>\skills）
+  home\                   便携 $HOME：.skillhub、.local\bin、.openclaw、.gitconfig
   pnpm\                   插件/技能安装的 store 与缓存
   electron\               Chromium 配置与各类缓存
   logs\  tmp\  backup\
@@ -159,9 +163,13 @@ node scripts/build-portable.mjs  # 输出到 <源码盘符>:\AI\deepseek-harness
 | 崩溃转储 | `data\electron\crash-dumps\` |
 | dsh spill、技能解包、ACL 锁 | `data\tmp\` |
 | 插件 / 技能安装的 pnpm store 与 HTTP 缓存（`npm_config_store_dir`、`npm_config_cache`、`PNPM_HOME`） | `data\pnpm\` |
+| 任何 `~` 展开（`$HOME`：SkillHub CLI、`.openclaw`、Git 身份） | `data\home\` |
+| `XDG_CACHE_HOME` / `XDG_CONFIG_HOME` | `data\cache\` / `data\home\.config\` |
 | 运行日志 | `data\logs\` |
 
 实测：运行一次后 `data\tmp` 新增 `dsh-spill-*`、`dsh-acl-skill-*`，主机 `%TEMP%` 条目数不变（50 → 50），且其中旧的 `dsh-*` 时间戳停在修复前的测试时刻。
+
+**主机零写入实测**（2026-11-10，完整启动 → 加载 Web → 退出）：以启动时刻为界，扫描 `%USERPROFILE%`（深度 4，含 `.dsh`、`.agents`、`.cache`、`.npm`、`.pnpm`、`AppData`）、`%APPDATA%`、`%LOCALAPPDATA%\Temp`、`%LOCALAPPDATA%\CrashDumps`、`D:\Users\Documents`、`%ProgramData`，窗口内新增文件 **0 个**（仅 WorkBuddy 自身日志 4 条，与应用无关）；同期 `data\` 内新增 Chromium 缓存、GPU/Shader 缓存、Cookies、Local Storage、会话、日志等 24 个文件。
 
 ## 工作区与技能装在哪
 
@@ -173,6 +181,27 @@ dsh 的**默认工作区**不是从 `DSH_HOME` 推出来的，而是拿系统的
 2. **旧记录自愈**：`src/workspace-repair.js` 在每次启动、dsh 加载注册表之前跑一遍：`default-workspace` 即使目录还在也搬到 `data\workspace\default-workspace`（内容一并复制，≤64 MB），换机后失效的路径重新指向 `data\workspace\<标题>`，用户自己挑的目录只要还在就一根手指都不碰。原记录备份到 `data\backup\workspace-<时间>.json`，报告写 `data\logs\workspace-repair-<时间>.json`。
 
 两条都**只复制、不删除**：旧目录原样留在本机，报告里的 `leftover` 就是可以自行清理的路径。技能本体（`<DSH_HOME>\skills`、`<工作区>\.dsh\skills`）因此也在盘内。
+
+### 技能商店装到哪：`$HOME` 也是便携的
+
+工作区搬进盘内只解决了一半：SkillHub 的安装器是**纯 `$HOME` 驱动**的，脚本里写死了三处——
+
+```
+$HOME/.skillhub          CLI 本体、config.json、skills_index
+$HOME/.local/bin         skillhub 可执行入口
+$HOME/.openclaw/…        可选插件与 workspace/skills
+```
+
+`$HOME` 继承主机时，这三处全落在 `C:\Users\<你>\`，拔盘即失。所以 `portableEnvironment()` 把 `HOME` 指向 `data\home`（并给出 `SKILLHUB_CONFIG_PATH`、`OPENCLAW_CONFIG_PATH`、`OPENCLAW_WORKSPACE` 三个覆盖，供 CLI 自己解析的那部分用），`XDG_CONFIG_HOME` 一并指到 `data\home\.config`。
+
+两个细节：
+
+- **分隔符必须转成正斜杠**。shell 会把 `F:\data\home` 当成一个完整的字面文件名，`mkdir -p "$HOME/.skillhub"` 就会造出名为 `F:\data\home\.skillhub` 的怪目录；所有交给 shell 的路径都过一遍 `toUnixPath()`。
+- **Git 身份**跟着 `$HOME` 走。首次启动时若 `data\home\.gitconfig` 不存在、而主机有，就复制一份过去（已有则从不覆盖，日志记 `portable home seeded: .gitconfig`），否则 agent 一提交就报 `Please tell me who you are`。
+
+实测（用便携环境的 `HOME` 跑安装器）：`Install complete. cli: ...\data\home\.local\bin\skillhub`；`skillhub install markdown --namespace clawhub_ivangdavila` → `...\data\workspace\default-workspace\skills\@clawhub_ivangdavila\markdown`；主机 `C:\Users\Administrator\.skillhub` 与 `.openclaw` 始终不存在。
+
+> 技能本体按 CLI 语义装在**当前目录**下的 `./skills`，所以「在哪个工作区里装就落在哪个工作区」，工作区在盘内 → 技能在盘内。
 
 实测（全新空目录当便携根）：首启日志 `workspace overlay: added` → 新建记录 `...\data\documents\deepseek-harness\default-workspace`；已有安装：日志 `workspaces re-pointed: D:\Users\Documents\... -> ...\data\workspace\default-workspace`，`skillhub-kit` 一并搬入。
 
@@ -208,15 +237,20 @@ node scripts/check-secrets.mjs --root . --json   # 机器可读的命中列表
 
 ## 删除会话
 
-上游只提供「归档会话」：归档只是把 id 放进一个隐藏集合，日志仍留在 `data\dsh-home\sessions\`，永久占盘；工作区菜单里的「删除工作区」也只把工作区从列表里摘掉，同样不删日志。会话行 ⋯ 菜单里的**删除会话**是本外壳补的。
+上游只提供「归档会话」：归档只是把 id 放进一个隐藏集合，日志仍留在 `data\dsh-home\sessions\`，永久占盘；工作区菜单里的「删除工作区」也只把工作区从列表里摘掉，同样不删日志。会话行菜单里的**删除会话**是本外壳补的。
 
-- 会话行的 `data-row-key="session:<id>"` 就是目标身份，按下 ⋯ 的瞬间记录，所以菜单永远指向你点的那一行；菜单项本身是从「归档会话」克隆的，样式、图标位、hover 都跟随主题，只有图标换成 `dsw-icon-trash-outline-regular`、文字换成红色。
+- 入口有两个：会话行右侧 **⋯** 按钮，以及**在会话行上直接右键**。右键菜单由上游自己弹出（`getTriggerProps` 绑定了 `onContextMenu`），外壳只负责在 `contextmenu` 事件里记下这一行是谁——不拦截、不合成、不改变菜单位置。
+- 会话行的 `data-row-key="session:<id>"` 就是目标身份，按下 ⋯ 或在行上右键的瞬间记录，所以菜单永远指向你操作的那一行；菜单项本身是从「归档会话」克隆的，样式、图标位、hover 都跟随主题，只有图标换成 `dsw-icon-trash-outline-regular`、文字换成红色。
 - 点击后弹原生确认框，**默认按钮是「取消」**（Enter / Esc / 关窗都等于放弃）；「删除」是一次明确的点击。
-- 确认后顺序是：停 dsh → 删掉 `sessions\<组>\<session-id>\` 这一个目录 → 从 `storages\workspace.json` 里抹掉该 id 的归档/置顶/工作区记账 → 重启 dsh 并重新加载窗口。重启是必须的：dsh 启动时把会话头索引在内存里，只删文件不重启的话列表里仍会留着那一行。
+- 确认后顺序是：停 dsh → 删掉 `sessions\<组>\<session-id>\` 这一个目录 → 从 `storages\workspace.json` 里抹掉该 id 的归档/置顶/工作区记账 → **立刻应答**，页面随即把那一行从列表里去掉（实测 206 ms）→ 后台重启 dsh → 重新加载窗口。
+- 为什么不能只刷新页面：dsh 在**启动时**把会话头索引进内存（`this.headers`），运行时没有重建入口，列表也就一直从这份索引里出。删了文件后按 F5，请求仍会命中那条内存记录，行照旧出现——**幽灵行**。所以重启是让「列表 == 磁盘」的唯一手段。
+- 重启要几秒，但用户不必等它来确认点击生效：宿主先回答，行先消失，重启在回答之后 500 ms 才开始，期间显示启动画面。
 - 只删这一个目录。所属分组目录即使空了也保留；会话里产生过的文件（在工作区目录下）不受影响。
-- 重启大约 7 秒，期间显示启动画面。代价换来的是「列表立刻和磁盘一致」，而不是把行藏起来、下次开机又冒出来。
+- 「新会话」那一行是当前工作区的占位会话（上游对该行不渲染 ⋯ 按钮，也不绑右键菜单），删掉后 dsh 会立刻再造一个空的，所以那一行不提供删除。
 
 `src/session-menu.js` 是宿主侧（只认 `session-<uuid>` 格式、只删除解析出来的、且必须位于 `sessions\` 之下的目录），`src/session-menu-injected.js` 是注入到页面的那一小段（只加菜单项、只把点击交给 preload 的单一通道），`src/preload.js` 只暴露 `deleteSession` 一个方法。
+
+实测（真实点击 + 真实鼠标事件）：右键菜单读到 `置顶会话 | 重命名 | 分叉会话 | 复制 Session ID | 在文件夹显示 | 归档会话 | 删除会话`；点击「删除」后 `hiddenAfterMs = 206`，重启完成时列表与磁盘同时只剩占位行。
 
 ## 窗口与托盘
 
@@ -244,9 +278,11 @@ node scripts/check-secrets.mjs --root . --json   # 机器可读的命中列表
 | `DSH_PORTABLE_CAPTURE_EXIT=1` | 截图后自动退出；失败时跳过错误弹窗，便于自动化 |
 | `DSH_PORTABLE_CLOSE_TEST=1` | 加载完成后模拟点击右上角 X，把「托盘是否就绪 / 托盘图标屏幕坐标 / 窗口收起前是否可见 / 收起后是否仍可见 / 剩余窗口数」写进 `data\logs\close-test.txt`，然后退出 |
 | `DSH_PORTABLE_CLOSE_TEST_SHOT=<file.png>` | 配合上一项：收起窗口前先抓一张整屏，用于核对托盘图标是否真的落在 `trayBounds` 报出的坐标上 |
-| `DSH_PORTABLE_DELETE_PROBE=<file.json>` | 走完整条删除路径：打开第一个会话行的 ⋯ 菜单、读菜单项、点「删除会话」、等页面重载，最后把菜单项、颜色、重载后列表与磁盘目录写入该文件，然后退出 |
+| `DSH_PORTABLE_DELETE_PROBE=<file.json>` | 走完整条删除路径：打开第一个会话行的 ⋯ 菜单、读菜单项、点「删除会话」、采样行消失的时刻、等页面重载，最后把菜单项、颜色、`hiddenAfterMs`、重载后列表与磁盘目录写入该文件，然后退出 |
 | `DSH_PORTABLE_DELETE_TEST=1` | 让删除确认框直接返回「删除」，供上一项无人值守跑通；真机上不要设 |
 | `DSH_PORTABLE_DIALOG_SHOT=<file.png>` | 配合上一项但不点确认：抓一张整屏，用来看确认框的图标、按钮顺序与默认焦点 |
+| `DSH_PORTABLE_CTX_PROBE=<file.json>` | 列出所有会话行（标题、是否有 ⋯ 按钮），随后在行中间派发一次 `contextmenu`、再在 ⋯ 上派发一次，记录两次弹出的菜单项，用来确认右键这条路径可用 |
+| `DSH_PORTABLE_SEND_PROBE=<file.json>` | 往输入框里敲一条短消息并发送，用于造一条非占位会话来验证菜单；会真实调用一次模型 |
 
 ## 已知限制
 

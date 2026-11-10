@@ -20,6 +20,15 @@ const path = require('node:path')
 const SESSION_ID_PATTERN = /^session-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 
 /**
+ * How long the host waits before restarting dsh after answering a delete.
+ *
+ * Long enough for the renderer to paint the row as gone (one frame would do,
+ * but a slow machine needs margin), short enough that nobody wonders whether
+ * the click registered.
+ */
+const DELETE_FEEDBACK_MS = 500
+
+/**
  * Whether a string is a Session id this host is willing to act on.
  * @param {unknown} value - candidate id.
  * @returns {boolean} true for a canonical `session-<uuid>` id.
@@ -173,8 +182,15 @@ function purgeStateFile(file, sessionId) {
  *
  * The runtime is stopped before the directory goes away and started again
  * afterwards: dsh indexes Session headers in memory at boot, so a running
- * process would keep serving the row it can no longer read. Restarting is what
- * makes the list match the disk instead of merely hiding the row.
+ * process would keep serving the row it can no longer read. Only a restart
+ * makes the list match the disk; a page reload alone cannot, because the server
+ * answers from that index.
+ *
+ * The answer, however, is not held back until the restart finishes. dsh takes
+ * several seconds to rebuild its plugin tree, and making the user stare at a
+ * splash screen to learn that a click worked is the wrong trade: the handler
+ * answers as soon as the directory is gone, the renderer drops the row, and the
+ * restart runs behind that answer.
  *
  * @param {object} options - host wiring.
  * @param {Electron.IpcMain} options.ipcMain - main-process IPC hub.
@@ -184,12 +200,31 @@ function purgeStateFile(file, sessionId) {
  * @param {(line: string) => void} options.log - shell log sink.
  * @param {Electron.NativeImage} [options.icon] - window icon for the dialog.
  * @param {() => Promise<void>} options.stopRuntime - stops the dsh server, if running.
- * @param {() => Promise<void>} options.startRuntime - starts it again and reloads the window.
+ * @param {() => Promise<void>} options.restartRuntime - starts it again and reloads the window.
  * @returns {void}
  */
-function installSessionMenu({ ipcMain, dialog, getWindow, dirs, log, icon, stopRuntime, startRuntime }) {
+function installSessionMenu({ ipcMain, dialog, getWindow, dirs, log, icon, stopRuntime, restartRuntime }) {
   const sessionsRoot = path.join(dirs.dshHome, 'sessions')
   const stateFile = path.join(dirs.dshHome, 'storages', 'workspace.json')
+  let restartTimer
+
+  /**
+   * Start the runtime again once the renderer has had a moment to drop the row.
+   *
+   * The short delay is what makes the feedback land first: the row disappears,
+   * then the splash screen takes over, so the click visibly did something
+   * instead of the window blanking out before the list changes. One timer at a
+   * time, so deleting two Sessions in a row cannot start two servers.
+   */
+  function scheduleRestart() {
+    if (restartTimer !== undefined) return
+    restartTimer = setTimeout(() => {
+      restartTimer = undefined
+      void Promise.resolve(restartRuntime()).catch((error) => {
+        log(`delete session: runtime restart failed (${error.message})`)
+      })
+    }, DELETE_FEEDBACK_MS)
+  }
 
   ipcMain.handle('portable:delete-session', async (_event, payload) => {
     const sessionId = payload?.sessionId
@@ -234,24 +269,28 @@ function installSessionMenu({ ipcMain, dialog, getWindow, dirs, log, icon, stopR
 
     if (outcome.ok && purgeStateFile(stateFile, sessionId)) log(`delete session: dropped ${sessionId} from workspace state`)
 
-    try {
-      await startRuntime()
-    } catch (error) {
-      log(`delete session: runtime restart failed (${error.message})`)
-      return { deleted: outcome.ok, reason: outcome.ok ? 'restart-failed' : outcome.reason, reloaded: false }
-    }
-
     if (!outcome.ok) {
       log(`delete session: ${sessionId} not deleted (${outcome.reason})`)
+      // The runtime is already down. Bring it back before answering, so a
+      // failed delete does not leave the window pointing at a dead server.
+      try {
+        await restartRuntime()
+      } catch (error) {
+        log(`delete session: runtime restart failed (${error.message})`)
+        return { deleted: false, reason: outcome.reason, reloaded: false }
+      }
       return { deleted: false, reason: outcome.reason, reloaded: true }
     }
+
     log(`delete session: removed ${outcome.directory}`)
-    return { deleted: true, directory: outcome.directory, reloaded: true }
+    scheduleRestart()
+    return { deleted: true, directory: outcome.directory, restarting: true }
   })
 }
 
 module.exports = {
   SESSION_ID_PATTERN,
+  DELETE_FEEDBACK_MS,
   isSessionId,
   planSessionDeletion,
   deleteSessionRecord,

@@ -211,6 +211,19 @@ check('calls the bridge and reloads only after a confirmed delete', () => {
   assert.ok(injected.includes('outcome?.deleted === true'))
   assert.ok(injected.includes('location.reload()'))
 })
+check('a right click records the Session without opening anything itself', () => {
+  assert.ok(injected.includes("addEventListener(\n    'contextmenu'"))
+  assert.ok(injected.includes('rememberRow(row)'))
+  // The fragment must observe the right click, never synthesise one.
+  assert.equal(injected.includes("dispatchEvent(new MouseEvent('contextmenu'"), false)
+  assert.equal(/preventDefault\(\)\s*\n\s*dismissMenu/.test(injected), false)
+})
+check('the row disappears as soon as the host answers', () => {
+  assert.ok(injected.includes('hideRow(id)'))
+  assert.ok(injected.includes('row.style.display = \'none\''))
+  // Reloading is the fallback for a host that could not restart, not the path.
+  assert.ok(injected.includes('outcome.restarting !== true'))
+})
 check('is idempotent and only decorates Session menus', () => {
   assert.ok(injected.includes('__dshPortableDeleteSession'))
   assert.ok(injected.includes('[role="menu"][data-context-menu]'))
@@ -233,7 +246,33 @@ check('the window carries the preload and the load hook re-injects', () => {
   assert.ok(main.includes("appFile('session-menu-injected.js')"))
   assert.ok(main.includes('installSessionMenu({'))
   assert.ok(main.includes('stopRuntime,'))
-  assert.ok(main.includes('startRuntime: restartRuntime'))
+  assert.ok(main.includes('restartRuntime,'))
+})
+
+console.log('the host answers before it restarts')
+const host = fs.readFileSync(new URL('../src/session-menu.js', import.meta.url), 'utf8')
+check('the delete is not held back until the restart finishes', () => {
+  // A confirmed delete returns `restarting`, not `reloaded`: the answer must
+  // not wait on a server that takes seconds to boot.
+  assert.ok(host.includes('restarting: true'))
+  assert.ok(host.includes('scheduleRestart()'))
+  assert.ok(host.includes('DELETE_FEEDBACK_MS'))
+  const answer = host.indexOf('return { deleted: true, directory: outcome.directory, restarting: true }')
+  const restart = host.indexOf('void Promise.resolve(restartRuntime())')
+  assert.ok(answer > 0 && restart > 0)
+  // The timer is scheduled before the answer is built, and the runtime call
+  // lives inside it — never in front of the return.
+  const body = host.slice(host.indexOf("ipcMain.handle('portable:delete-session'"))
+  assert.ok(body.indexOf('scheduleRestart()') < body.indexOf('restarting: true'))
+})
+check('a failed delete still brings the runtime back', () => {
+  const body = host.slice(host.indexOf("ipcMain.handle('portable:delete-session'"))
+  const failure = body.slice(body.indexOf('if (!outcome.ok)'))
+  assert.ok(failure.includes('await restartRuntime()'))
+  assert.ok(failure.includes("return { deleted: false, reason: outcome.reason, reloaded: true }"))
+})
+check('two deletes in a row cannot start two servers', () => {
+  assert.ok(host.includes('if (restartTimer !== undefined) return'))
 })
 
 console.log(`\n${passed} passed, ${failed} failed`)

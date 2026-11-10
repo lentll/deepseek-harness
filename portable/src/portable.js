@@ -22,6 +22,7 @@
 'use strict'
 
 const fs = require('node:fs')
+const os = require('node:os')
 const path = require('node:path')
 
 /** File that identifies a valid portable root. */
@@ -47,6 +48,46 @@ function resolvePortableRoot(execPath) {
 }
 
 /**
+ * Rewrite a Windows path so it can be handed to a shell.
+ *
+ * A shell treats `F:\data\home` as one literal file name, so every path that
+ * crosses into `bash` uses forward slashes. Node accepts either form.
+ * @param {string} value - absolute Windows path.
+ * @returns {string} the same path with `/` separators.
+ */
+function toUnixPath(value) {
+  return value.replace(/\\/g, '/')
+}
+
+/**
+ * Copy the host's Git identity into the portable home, once.
+ *
+ * Redirecting `$HOME` moves every `~` lookup onto the stick, Git included, so
+ * `data\home\.gitconfig` is what a commit reads now. Seeding it from the host
+ * keeps `git commit` working on a fresh machine; an existing file on the stick
+ * is never overwritten, so edits made there survive.
+ *
+ * @param {Record<string, string>} dirs - result of {@link portablePaths}.
+ * @param {{hostHome?: string}} [options] - overridable host home for tests.
+ * @returns {string[]} the file names that were copied.
+ */
+function seedPortableHome(dirs, { hostHome = os.homedir() } = {}) {
+  const copied = []
+  for (const name of ['.gitconfig']) {
+    const target = path.join(dirs.home, name)
+    const source = path.join(hostHome, name)
+    if (fs.existsSync(target) || !fs.existsSync(source)) continue
+    try {
+      fs.copyFileSync(source, target)
+      copied.push(name)
+    } catch {
+      // A missing identity only affects commits; it must not block startup.
+    }
+  }
+  return copied
+}
+
+/**
  * Derive every data location from the portable root.
  * @param {string} root - absolute portable root.
  * @returns {Record<string, string>} absolute directories and files.
@@ -60,6 +101,9 @@ function portablePaths(root) {
     data,
     dshHome: path.join(data, 'dsh-home'),
     agentsHome: path.join(data, 'agents'),
+    // A portable `$HOME`. SkillHub and the tools the agent runs treat `~` as
+    // the user profile, which is the host disk unless it is redirected here.
+    home: path.join(data, 'home'),
     documents: path.join(data, 'documents'),
     workspace: path.join(data, 'workspace'),
     electron,
@@ -86,6 +130,7 @@ function ensurePortableDirectories(dirs) {
     dirs.data,
     dirs.dshHome,
     dirs.agentsHome,
+    dirs.home,
     dirs.documents,
     dirs.workspace,
     dirs.electron,
@@ -128,6 +173,11 @@ function configureElectronPaths(app, dirs) {
  */
 function portableEnvironment(dirs) {
   const env = { ...process.env }
+  // Shells and the tools they start derive `~` from HOME. Pointing it at the
+  // stick is what keeps a skill install inside `data\home\.skillhub` instead of
+  // the machine's user profile. Git also reads this path, so a portable
+  // identity lives in `data\home\.gitconfig`.
+  env.HOME = toUnixPath(dirs.home)
   env.DSH_HOME = dirs.dshHome
   env.DSH_AGENTS_HOME = dirs.agentsHome
   env.DSH_PORTABLE_ROOT = dirs.root
@@ -144,6 +194,13 @@ function portableEnvironment(dirs) {
   env.npm_config_store_dir = path.join(dirs.data, 'pnpm', 'store')
   env.npm_config_cache = path.join(dirs.data, 'pnpm', 'cache')
   env.XDG_CACHE_HOME = path.join(dirs.data, 'cache')
+  env.XDG_CONFIG_HOME = path.join(dirs.home, '.config')
+  // SkillHub's installer hardcodes `$HOME/.skillhub`, `$HOME/.local/bin` and
+  // `$HOME/.openclaw`; its CLI honours these two overrides for the parts it
+  // resolves itself, so both halves land on the stick.
+  env.SKILLHUB_CONFIG_PATH = toUnixPath(path.join(dirs.home, '.skillhub', 'config.json'))
+  env.OPENCLAW_CONFIG_PATH = toUnixPath(path.join(dirs.home, '.openclaw', 'openclaw.json'))
+  env.OPENCLAW_WORKSPACE = toUnixPath(path.join(dirs.home, '.openclaw', 'workspace'))
   delete env.NODE_OPTIONS
   delete env.ELECTRON_RUN_AS_NODE
   return env
@@ -265,4 +322,6 @@ module.exports = {
   ensureProfileOverlay,
   profilePatchPath,
   pruneEmptyDirectory,
+  seedPortableHome,
+  toUnixPath,
 }

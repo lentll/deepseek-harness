@@ -182,6 +182,15 @@ node scripts/check-secrets.mjs --root .          # 扫当前目录，干净则 e
 node scripts/check-secrets.mjs --root . --json   # 机器可读的命中列表
 ```
 
+## 窗口与托盘
+
+- 右上角 X **收进托盘**，不结束程序。判定逻辑在 `src/window-lifecycle.js` 的 `closeAction()`：只有「托盘图标确实建好了」且「当前不在退出流程中」两个条件同时成立才返回 `hide`，其余情况一律放行关闭。前半条防止窗口藏进一个不存在的托盘里再也找不回来，后半条防止退出时被自己的 close 处理器挡住、进程挂着不退。
+- 托盘菜单三项：**显示主窗口** / **打开日志文件夹** / **退出**；左键单击或双击图标同样唤回窗口。
+- 「退出」走的是 `app.quit()` → `before-quit` → `serverStop()`（内部 `taskkill /t` 收整棵进程树），所以从托盘退出和直接关系统都会清掉 dsh 子进程，不留孤儿进程。
+- 第一次收起时弹一次系统气泡，说明窗口去了哪里、怎么找回。
+- 托盘图标复用 `resources\app\build\icon.ico`（与窗口图标同一份多尺寸 ICO）。读不到图标时只记一条日志并退回「关闭即退出」的旧行为，不会出现「窗口消失且无法恢复」。
+- 程序已在托盘时再次双击 exe，单实例锁会把请求转给已有进程，`second-instance` 直接唤回那个窗口。
+
 ## 运行机制
 
 1. `resolvePortableRoot()` 取 `DSH_PORTABLE_ROOT` 或 exe 所在目录（认 `portable.marker`）。
@@ -189,7 +198,7 @@ node scripts/check-secrets.mjs --root . --json   # 机器可读的命中列表
 3. `migratePortablePaths()` 比对 `data\portable-state.json` 里记录的旧根：不同则改写 `data\dsh-home` 下的文本文件（JSON 转义、正斜杠、YAML 三种写法都覆盖），前 1 MB 的文件进 `data\backup\`。
 4. `startDshServer()` 用 `process.execPath` + `ELECTRON_RUN_AS_NODE=1` 跑
    `dsh web --no-open --host 127.0.0.1 --port <3080|3081|…>`，从输出里抓 `dsh web: <url>`（该 URL 带一次性 token，前端鉴权靠它）。
-5. 窗口加载该 URL，退出时 `taskkill /t` 收掉整棵进程树。
+5. 窗口加载该 URL。关闭窗口只是收进托盘（见上节）；真正退出时 `taskkill /t` 收掉整棵进程树。
 
 ## 自检开关（仅诊断用）
 
@@ -197,6 +206,8 @@ node scripts/check-secrets.mjs --root . --json   # 机器可读的命中列表
 |---|---|
 | `DSH_PORTABLE_CAPTURE=<file.png>` | 加载完成后截图，并把 `document.body.innerText` 存为 `<file.png>.txt` |
 | `DSH_PORTABLE_CAPTURE_EXIT=1` | 截图后自动退出；失败时跳过错误弹窗，便于自动化 |
+| `DSH_PORTABLE_CLOSE_TEST=1` | 加载完成后模拟点击右上角 X，把「托盘是否就绪 / 托盘图标屏幕坐标 / 窗口收起前是否可见 / 收起后是否仍可见 / 剩余窗口数」写进 `data\logs\close-test.txt`，然后退出 |
+| `DSH_PORTABLE_CLOSE_TEST_SHOT=<file.png>` | 配合上一项：收起窗口前先抓一张整屏，用于核对托盘图标是否真的落在 `trayBounds` 报出的坐标上 |
 
 ## 已知限制
 

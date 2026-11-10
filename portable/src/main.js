@@ -10,7 +10,7 @@
 
 'use strict'
 
-const { app, BrowserWindow, Menu, Tray, desktopCapturer, dialog, nativeImage, screen, shell } = require('electron')
+const { app, BrowserWindow, Menu, Tray, desktopCapturer, dialog, ipcMain, nativeImage, screen, shell } = require('electron')
 const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
@@ -27,6 +27,7 @@ const {
 const { migratePortablePaths } = require('./path-migration')
 const { repairWorkspaces } = require('./workspace-repair')
 const { startDshServer, initProfile } = require('./dsh-server')
+const { installSessionMenu } = require('./session-menu')
 const { closeAction, trayMenuTemplate, trayTooltip, hiddenNotice } = require('./window-lifecycle')
 
 const APP_TITLE = 'DeepSeek Harness'
@@ -186,6 +187,9 @@ function createWindow() {
       sandbox: true,
       spellcheck: false,
       backgroundThrottling: false,
+      // The page cannot delete a Session itself; the bridge in preload.js is
+      // the single narrow channel for that one action.
+      preload: appFile('preload.js'),
     },
   })
 
@@ -218,6 +222,16 @@ function createWindow() {
     if (isLocalUrl(url)) return
     event.preventDefault()
     openExternal(url)
+  })
+
+  // dsh ships no "delete Session" action, so the shell adds one to the Session
+  // row menu after every load — including the reload that follows a confirmed
+  // delete, which is why this is a load hook and not a one-shot call.
+  const sessionMenuPatch = fs.readFileSync(appFile('session-menu-injected.js'), 'utf8')
+  mainWindow.webContents.on('did-finish-load', () => {
+    void mainWindow?.webContents.executeJavaScript(sessionMenuPatch).catch((error) => {
+      log(`session menu patch failed: ${error.message}`)
+    })
   })
 
   void mainWindow.loadFile(appFile('splash.html'))
@@ -254,6 +268,53 @@ function pruneHostHome() {
   if (pruneEmptyDirectory(hostHome)) log(`removed empty host folder: ${hostHome}`)
 }
 
+/**
+ * Start the dsh server and remember how to stop it.
+ *
+ * Kept separate from {@link boot} so a delete can restart the runtime: dsh
+ * indexes Session headers in memory at boot, so a running server keeps serving
+ * a row whose log no longer exists until it is started again.
+ *
+ * @returns {Promise<{url: string, stop: () => unknown}>} the running server.
+ */
+async function startRuntime() {
+  const server = await startDshServer({
+    resourcesPath: process.resourcesPath,
+    dirs,
+    env: portableEnvironment(dirs),
+    onLog: () => {},
+  })
+  serverStop = server.stop
+  log(`server ready: ${server.url.replace(/token=[^&]+/, 'token=***')}`)
+  return server
+}
+
+/** Stop the dsh server, if one is running, and forget its stop handle. */
+async function stopRuntime() {
+  const stop = serverStop
+  serverStop = undefined
+  if (stop === undefined) return
+  await Promise.resolve(stop())
+  log('server stopped')
+}
+
+/**
+ * Stop the runtime, start it again on a fresh token, and load the window.
+ *
+ * The restart takes a few seconds because dsh rebuilds its plugin tree, so the
+ * splash screen comes back first: a blank window for that long reads as a crash.
+ *
+ * @returns {Promise<void>} resolution after the window points at the new server.
+ */
+async function restartRuntime() {
+  if (mainWindow !== undefined) await mainWindow.loadFile(appFile('splash.html'))
+  await stopRuntime()
+  const server = await startRuntime()
+  if (mainWindow === undefined) return
+  await mainWindow.loadURL(server.url)
+  mainWindow.setTitle(APP_TITLE)
+}
+
 /** Start the runtime, repair stale paths, and show the Web application. */
 async function boot() {
   log(`portable root: ${root}`)
@@ -287,14 +348,7 @@ async function boot() {
     log(`workspaces unchanged: ${repaired.reason ?? 'none'}`)
   }
 
-  const server = await startDshServer({
-    resourcesPath: process.resourcesPath,
-    dirs,
-    env,
-    onLog: () => {},
-  })
-  serverStop = server.stop
-  log(`server ready: ${server.url.replace(/token=[^&]+/, 'token=***')}`)
+  const server = await startRuntime()
 
   // The runtime touches `~/.dsh` during startup even though DSH_HOME is set;
   // clearing the empty leftover keeps the "nothing on the host" promise.
@@ -316,6 +370,141 @@ async function boot() {
     fs.writeFileSync(`${captureTarget}.txt`, String(text), 'utf8')
     log(`captured window to ${captureTarget}`)
     if (process.env.DSH_PORTABLE_CAPTURE_EXIT === '1') app.quit()
+  }
+
+  // Diagnostic hook: `DSH_PORTABLE_DOM_TEST=<file.json>` records the sidebar's
+  // session rows and the open context menu as raw markup, then quits. It exists
+  // to answer one question with evidence instead of guesswork: does the page
+  // expose the Session id anywhere in the DOM? Ordinary launches ignore it.
+  const domTarget = process.env.DSH_PORTABLE_DOM_TEST
+  if (domTarget !== undefined && domTarget.length > 0) {
+    await new Promise((resolve) => setTimeout(resolve, 4000))
+    const probe = `(() => {
+      const attrs = new Set()
+      for (const el of document.querySelectorAll('*')) {
+        for (const a of el.attributes || []) if (a.name.startsWith('data-')) attrs.add(a.name)
+      }
+      const buttons = [...document.querySelectorAll('button')].slice(0, 40).map((b) => ({
+        label: b.getAttribute('aria-label'),
+        title: b.getAttribute('title'),
+        text: (b.innerText || '').trim().slice(0, 16),
+        cls: String(b.className).slice(0, 70)
+      }))
+      const rows = [...document.querySelectorAll('[role="treeitem"], [role="option"], [role="row"]')]
+        .slice(0, 3).map((el) => el.outerHTML.slice(0, 700))
+      return { attrs: [...attrs].sort(), buttons, rows, sessionIds: (document.documentElement.innerHTML.match(/session-[0-9a-f]{8}-[0-9a-f]{4}/g) || []).slice(0, 5) }
+    })()`
+    const report = { beforeMenu: await mainWindow.webContents.executeJavaScript(probe).catch((e) => String(e)) }
+    const clickMore = `(() => {
+      window.__probeAdded = []
+      window.__probeObserver = new MutationObserver((muts) => {
+        for (const m of muts) for (const n of m.addedNodes) if (n.nodeType === 1) window.__probeAdded.push(n)
+      })
+      window.__probeObserver.observe(document.body, { childList: true, subtree: true })
+      const row = document.querySelector('[data-row-key^="session:"] [data-context-menu-trigger]')
+      if (!row) return 'no-session-trigger'
+      row.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0 }))
+      row.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, button: 0 }))
+      row.click()
+      return 'clicked ' + (row.closest('[data-row-key]')?.getAttribute('data-row-key') ?? '?')
+    })()`
+    report.clicked = await mainWindow.webContents.executeJavaScript(clickMore).catch((e) => String(e))
+    await new Promise((resolve) => setTimeout(resolve, 800))
+    const menuProbe = `(() => {
+      const added = (window.__probeAdded || []).map((n) => ({ tag: n.tagName, cls: String(n.className).slice(0, 80), role: n.getAttribute('role'), html: n.outerHTML.slice(0, 5000) }))
+      const menu = document.querySelector('[role="menu"][data-context-menu]')
+      return {
+        addedCount: added.length,
+        added: added.slice(0, 2),
+        menuItems: menu ? [...menu.querySelectorAll('[role="menuitem"]')].map((b) => b.innerText.trim()) : [],
+        menuHtml: menu ? menu.outerHTML.slice(0, 8000) : '',
+        icons: [...document.querySelectorAll('symbol')].map((s) => s.id).filter((id) => /trash|delete|remove|cross|close|bin/i.test(id)).slice(0, 20)
+      }
+    })()`
+    report.menu = await mainWindow.webContents.executeJavaScript(menuProbe).catch((e) => String(e))
+    fs.writeFileSync(domTarget, JSON.stringify(report, null, 2), 'utf8')
+    log(`wrote DOM report to ${domTarget}`)
+    app.quit()
+  }
+
+  // Diagnostic hook: `DSH_PORTABLE_DELETE_PROBE=<file.json>` walks the whole
+  // delete path the way a user does — open the row menu, read the entries,
+  // click the injected one — and records what happened. It pairs with
+  // `DSH_PORTABLE_DELETE_TEST=1`, which answers the native dialog automatically.
+  // Ordinary launches ignore both variables.
+  const deleteProbe = process.env.DSH_PORTABLE_DELETE_PROBE
+  if (deleteProbe !== undefined && deleteProbe.length > 0) {
+    const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+    const report = {}
+    const js = (code) => mainWindow.webContents.executeJavaScript(code).catch((error) => `error: ${error.message}`)
+    await wait(4500)
+    report.opened = await js(`(() => {
+      const trigger = document.querySelector('[data-row-key^="session:"] [data-context-menu-trigger]')
+      if (!trigger) return 'no-session-row'
+      trigger.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))
+      trigger.click()
+      return trigger.closest('[data-row-key]').getAttribute('data-row-key')
+    })()`)
+    await wait(700)
+    report.beforeDelete = await js('performance.timeOrigin')
+    report.menu = await js(`(() => {
+      const menu = document.querySelector('[role="menu"][data-context-menu]')
+      if (!menu) return 'no-menu'
+      const items = [...menu.querySelectorAll('[role="menuitem"]')]
+      const entry = items.find((item) => (item.innerText || '').includes('删除会话'))
+      const composed = entry === undefined ? null : getComputedStyle(entry).color
+      if (entry !== undefined) entry.click()
+      return { labels: items.map((item) => (item.innerText || '').split('\\n')[0].trim()), clicked: entry !== undefined, color: composed }
+    })()`)
+    // `DSH_PORTABLE_DIALOG_SHOT=<file.png>` grabs the native confirmation the
+    // user actually sees, then exits without answering it. Paired with no
+    // DSH_PORTABLE_DELETE_TEST, the dialog stays open for the screenshot.
+    const dialogShot = process.env.DSH_PORTABLE_DIALOG_SHOT
+    if (dialogShot !== undefined && dialogShot.length > 0) {
+      await wait(1800)
+      const display = screen.getPrimaryDisplay()
+      const sources = await desktopCapturer.getSources({
+        types: ['screen'],
+        thumbnailSize: { width: display.size.width, height: display.size.height },
+      })
+      const primary = sources.find((source) => source.display_id === String(display.id)) ?? sources[0]
+      if (primary !== undefined) fs.writeFileSync(dialogShot, primary.thumbnail.toPNG())
+      log(`captured the delete dialog to ${dialogShot}`)
+      app.quit()
+      return
+    }
+
+    // The host restarts the runtime before it answers, so the page navigates
+    // mid-call: poll until the injected patch is back on a loaded document
+    // instead of assuming a fixed delay.
+    report.afterReload = { pending: true }
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      await wait(1000)
+      const state = await js(`({
+        ready: document.readyState,
+        origin: performance.timeOrigin,
+        patchInstalled: window.__dshPortableDeleteSession === true,
+        rows: document.querySelectorAll('[data-row-key^="session:"]').length,
+        titles: [...document.querySelectorAll('[data-row-key^="session:"] [class*="title"]')].map((n) => n.textContent.trim()),
+        url: location.href.replace(/token=[^&]+/, 'token=***')
+      })`)
+      const reloaded = typeof state === 'object' && state.origin !== report.beforeDelete
+      if (reloaded && state.patchInstalled === true && state.rows > 0) {
+        report.afterReload = state
+        break
+      }
+      report.afterReload = state
+    }
+    report.sessionsOnDisk = fs.existsSync(path.join(dirs.dshHome, 'sessions'))
+      ? fs.readdirSync(path.join(dirs.dshHome, 'sessions'), { withFileTypes: true })
+          .filter((entry) => entry.isDirectory())
+          .flatMap((entry) =>
+            fs.readdirSync(path.join(dirs.dshHome, 'sessions', entry.name)).map((name) => `${entry.name}/${name}`),
+          )
+      : []
+    fs.writeFileSync(deleteProbe, JSON.stringify(report, null, 2), 'utf8')
+    log(`wrote delete probe to ${deleteProbe}`)
+    app.quit()
   }
 
   // Diagnostic hook: `DSH_PORTABLE_CLOSE_TEST=1` clicks the title-bar X the way
@@ -384,6 +573,16 @@ if (!app.requestSingleInstanceLock({ root })) {
     Menu.setApplicationMenu(null)
     createWindow()
     createTray()
+    installSessionMenu({
+      ipcMain,
+      dialog,
+      getWindow: () => mainWindow,
+      dirs,
+      log,
+      icon: nativeImage.createFromPath(buildAsset('icon.ico')),
+      stopRuntime,
+      startRuntime: restartRuntime,
+    })
     try {
       await boot()
     } catch (error) {

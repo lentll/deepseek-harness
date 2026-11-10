@@ -206,6 +206,18 @@ node scripts/check-secrets.mjs --root .          # 扫当前目录，干净则 e
 node scripts/check-secrets.mjs --root . --json   # 机器可读的命中列表
 ```
 
+## 删除会话
+
+上游只提供「归档会话」：归档只是把 id 放进一个隐藏集合，日志仍留在 `data\dsh-home\sessions\`，永久占盘；工作区菜单里的「删除工作区」也只把工作区从列表里摘掉，同样不删日志。会话行 ⋯ 菜单里的**删除会话**是本外壳补的。
+
+- 会话行的 `data-row-key="session:<id>"` 就是目标身份，按下 ⋯ 的瞬间记录，所以菜单永远指向你点的那一行；菜单项本身是从「归档会话」克隆的，样式、图标位、hover 都跟随主题，只有图标换成 `dsw-icon-trash-outline-regular`、文字换成红色。
+- 点击后弹原生确认框，**默认按钮是「取消」**（Enter / Esc / 关窗都等于放弃）；「删除」是一次明确的点击。
+- 确认后顺序是：停 dsh → 删掉 `sessions\<组>\<session-id>\` 这一个目录 → 从 `storages\workspace.json` 里抹掉该 id 的归档/置顶/工作区记账 → 重启 dsh 并重新加载窗口。重启是必须的：dsh 启动时把会话头索引在内存里，只删文件不重启的话列表里仍会留着那一行。
+- 只删这一个目录。所属分组目录即使空了也保留；会话里产生过的文件（在工作区目录下）不受影响。
+- 重启大约 7 秒，期间显示启动画面。代价换来的是「列表立刻和磁盘一致」，而不是把行藏起来、下次开机又冒出来。
+
+`src/session-menu.js` 是宿主侧（只认 `session-<uuid>` 格式、只删除解析出来的、且必须位于 `sessions\` 之下的目录），`src/session-menu-injected.js` 是注入到页面的那一小段（只加菜单项、只把点击交给 preload 的单一通道），`src/preload.js` 只暴露 `deleteSession` 一个方法。
+
 ## 窗口与托盘
 
 - 右上角 X **收进托盘**，不结束程序。判定逻辑在 `src/window-lifecycle.js` 的 `closeAction()`：只有「托盘图标确实建好了」且「当前不在退出流程中」两个条件同时成立才返回 `hide`，其余情况一律放行关闭。前半条防止窗口藏进一个不存在的托盘里再也找不回来，后半条防止退出时被自己的 close 处理器挡住、进程挂着不退。
@@ -232,6 +244,9 @@ node scripts/check-secrets.mjs --root . --json   # 机器可读的命中列表
 | `DSH_PORTABLE_CAPTURE_EXIT=1` | 截图后自动退出；失败时跳过错误弹窗，便于自动化 |
 | `DSH_PORTABLE_CLOSE_TEST=1` | 加载完成后模拟点击右上角 X，把「托盘是否就绪 / 托盘图标屏幕坐标 / 窗口收起前是否可见 / 收起后是否仍可见 / 剩余窗口数」写进 `data\logs\close-test.txt`，然后退出 |
 | `DSH_PORTABLE_CLOSE_TEST_SHOT=<file.png>` | 配合上一项：收起窗口前先抓一张整屏，用于核对托盘图标是否真的落在 `trayBounds` 报出的坐标上 |
+| `DSH_PORTABLE_DELETE_PROBE=<file.json>` | 走完整条删除路径：打开第一个会话行的 ⋯ 菜单、读菜单项、点「删除会话」、等页面重载，最后把菜单项、颜色、重载后列表与磁盘目录写入该文件，然后退出 |
+| `DSH_PORTABLE_DELETE_TEST=1` | 让删除确认框直接返回「删除」，供上一项无人值守跑通；真机上不要设 |
+| `DSH_PORTABLE_DIALOG_SHOT=<file.png>` | 配合上一项但不点确认：抓一张整屏，用来看确认框的图标、按钮顺序与默认焦点 |
 
 ## 已知限制
 

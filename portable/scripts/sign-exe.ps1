@@ -17,10 +17,10 @@ param(
 $ErrorActionPreference = "Stop"
 
 # No hard-coded drive letter: mirror build-portable.mjs and default to
-# "<project drive>:\AI\deepseek-harness-protable".
+# "<project drive>:\AI\deepseek-harness-portable".
 if (-not $ExePath) {
   $drive = [System.IO.Path]::GetPathRoot((Split-Path -Parent $PSScriptRoot))
-  $ExePath = Join-Path $drive "AI\deepseek-harness-protable\DeepSeek Harness.exe"
+  $ExePath = Join-Path $drive "AI\deepseek-harness-portable\DeepSeek Harness.exe"
 }
 
 if (-not (Test-Path -LiteralPath $ExePath)) {

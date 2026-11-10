@@ -2,7 +2,7 @@
 
 把 DeepSeek Harness 的 Web 前端套进 Electron 外壳，做成一个**双击即用、免安装、数据随盘走**的 Windows 便携程序。
 
-产物默认落在 **源码所在盘符** 的 `\AI\deepseek-harness-protable`——本机源码在 `F:` 盘，所以实际路径是 `F:\AI\deepseek-harness-protable`（这只是本地输出目录名，与仓库分支名无关；分支已改名为 `portable`）。
+产物默认落在 **源码所在盘符** 的 `\AI\deepseek-harness-portable`——本机源码在 `F:` 盘，所以实际路径是 `F:\AI\deepseek-harness-portable`。
 
 盘符只影响**编译时把文件写到哪**，不影响程序本身：产物以 exe 所在目录为根目录，U 盘插到任何电脑、被分配成任何盘符都能直接运行（见下表的「换电脑自动识别路径」）。
 
@@ -81,10 +81,10 @@ deepseek-harness-portable\
 npm install                      # electron@44.7.0 + resedit + sharp
 npm install --prefix runtime @deepseek-ai/dsh@0.2.2-rc.1   # 当前出包版本；换版本见下
 node scripts/make-icon.mjs       # 生成 build/icon.ico
-node scripts/build-portable.mjs  # 输出到 <源码盘符>:\AI\deepseek-harness-protable
+node scripts/build-portable.mjs  # 输出到 <源码盘符>:\AI\deepseek-harness-portable
 ```
 
-输出目录默认取**源码目录所在盘符** + `\AI\deepseek-harness-protable`，源码在哪个盘就写到哪个盘，脚本里不写死盘符；想换位置加 `--out <目录>`，或用环境变量 `DSH_PORTABLE_OUT` 固定。
+输出目录默认取**源码目录所在盘符** + `\AI\deepseek-harness-portable`，源码在哪个盘就写到哪个盘，脚本里不写死盘符；想换位置加 `--out <目录>`，或用环境变量 `DSH_PORTABLE_OUT` 固定。
 
 版本号取自**官方仓**的 release tag：`dsh-v0.2.2-rc.1` → `0.2.2-rc.1`（去掉 `dsh-v` 前缀）。本地要跟新版就改上面那行版本号再跑；CI 出包时由 Actions 页面 Run workflow 里的 `version` 决定（留空则取 master `package.json` 与上游最新 release 中较大的那个）。
 
@@ -131,7 +131,7 @@ node scripts/build-portable.mjs  # 输出到 <源码盘符>:\AI\deepseek-harness
 
 命令行等价写法：`node scripts\update.mjs [--version <ver>] [--out <dir>]`。
 
-不传 `--out` 时用上面「构建」里的默认目录（源码盘符 + `\AI\deepseek-harness-protable`），换盘不用改脚本。
+不传 `--out` 时用上面「构建」里的默认目录（源码盘符 + `\AI\deepseek-harness-portable`），换盘不用改脚本。
 
 ### 更新的前提
 

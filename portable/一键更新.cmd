@@ -26,7 +26,7 @@ goto end
 
 :ok
 echo [OK] Rebuilt and re-signed. Double-click to start:
-echo      %~d0\AI\deepseek-harness-protable\DeepSeek Harness.exe
+echo      %~d0\AI\deepseek-harness-portable\DeepSeek Harness.exe
 goto end
 
 :warn

@@ -45,7 +45,7 @@ function argValue(flag, fallback) {
 }
 
 /**
- * Default output directory: `<project drive>:\AI\deepseek-harness-protable`.
+ * Default output directory: `<project drive>:\AI\deepseek-harness-portable`.
  *
  * Deriving the drive from the project keeps the default correct after the whole
  * workspace is copied to another USB stick, where `F:` may well not exist.
@@ -54,7 +54,7 @@ function argValue(flag, fallback) {
 function defaultOutDir() {
   if (process.env.DSH_PORTABLE_OUT) return path.resolve(process.env.DSH_PORTABLE_OUT)
   const drive = path.parse(projectRoot).root
-  return path.join(drive, 'AI', 'deepseek-harness-protable')
+  return path.join(drive, 'AI', 'deepseek-harness-portable')
 }
 
 const outDir = path.resolve(argValue('--out', defaultOutDir()))

@@ -46,7 +46,7 @@ function check(name, body) {
   }
 }
 
-const ROOT = 'F:\\AI\\deepseek-harness-protable'
+const ROOT = 'F:\\AI\\deepseek-harness-portable'
 const WORKSPACE_ROOT = path.join(ROOT, 'data', 'workspace')
 
 /**

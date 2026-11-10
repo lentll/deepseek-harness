@@ -25,8 +25,8 @@ const projectRoot = path.resolve(here, '..')
 
 const APP_NAME = 'DeepSeek Harness'
 const EXE_NAME = `${APP_NAME}.exe`
-/** Default target: `<project drive>:\AI\deepseek-harness-protable`, so a copied workspace keeps working. */
-const DEFAULT_OUT = path.join(path.parse(projectRoot).root, 'AI', 'deepseek-harness-protable')
+/** Default target: `<project drive>:\AI\deepseek-harness-portable`, so a copied workspace keeps working. */
+const DEFAULT_OUT = path.join(path.parse(projectRoot).root, 'AI', 'deepseek-harness-portable')
 
 /** Locales kept from Electron's `locales` folder; Windows falls back to en-US. */
 const KEPT_LOCALES = new Set(['en-US.pak', 'zh-CN.pak'])

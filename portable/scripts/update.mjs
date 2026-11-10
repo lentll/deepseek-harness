@@ -2,12 +2,14 @@
  * One-shot updater for the portable package.
  *
  * Wraps `build-portable.mjs` with the concerns an in-place update has that a
- * first build does not: closing the running app so files are not locked,
- * optionally moving the dsh runtime to a newer npm version, and proving that
- * the user's `data` folder survived untouched.
+ * first build does not: fast-forwarding a git checkout to the newest published
+ * commit, closing the running app so files are not locked, optionally moving
+ * the dsh runtime to a newer npm version, and proving that the user's `data`
+ * folder survived untouched.
  *
  * Usage:
- *   node scripts/update.mjs                       # rebuild with current code
+ *   node scripts/update.mjs                       # fetch the branch, then rebuild
+ *   node scripts/update.mjs --no-pull             # rebuild what is on disk
  *   node scripts/update.mjs --version 0.2.3       # upgrade the dsh runtime first
  *   node scripts/update.mjs --version latest      # newest published runtime
  *   node scripts/update.mjs --out "<package dir>"
@@ -17,6 +19,7 @@
 
 import fs from 'node:fs'
 import path from 'node:path'
+import crypto from 'node:crypto'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 
@@ -30,6 +33,9 @@ const RUNTIME_PACKAGE = '@deepseek-ai/dsh'
 
 /** Arguments that take a value, so `--out` alone is not mistaken for a path. */
 const VALUED_FLAGS = new Set(['--out', '--version'])
+
+/** Flags this script consumes and must not forward to the build. */
+const CONSUMED_FLAGS = new Set(['--no-pull'])
 
 /**
  * Read a `--flag value` pair from argv.
@@ -70,6 +76,95 @@ function step(message) {
 function fail(message) {
   console.error(`\n[update] 失败：${message}`)
   process.exit(1)
+}
+
+/**
+ * Run git against the source tree.
+ *
+ * Returns `null` whenever git is missing, the directory is not a work tree, or
+ * the command exits non-zero, so every caller can treat failure as "skip this
+ * step" instead of aborting an otherwise valid build.
+ * @param {string[]} args - arguments after `-C <projectRoot>`.
+ * @returns {string|null} trimmed stdout, or `null` on any failure.
+ */
+function git(args) {
+  const result = spawnSync('git', ['-C', projectRoot, ...args], { encoding: 'utf8', windowsHide: true })
+  if (result.status !== 0) return null
+  return `${result.stdout ?? ''}`.trim()
+}
+
+/**
+ * Hash the two manifests a build depends on, so a pull that changes them can be
+ * reported: the installed `node_modules` would then be out of date.
+ * @returns {string} hex digest, or an empty string when a manifest is missing.
+ */
+function manifestDigest() {
+  try {
+    const hash = crypto.createHash('sha256')
+    hash.update(fs.readFileSync(path.join(projectRoot, 'package.json')))
+    hash.update(fs.readFileSync(path.join(projectRoot, 'runtime', 'package.json')))
+    return hash.digest('hex')
+  } catch {
+    return ''
+  }
+}
+
+/**
+ * Fast-forward the source tree to the newest commit of the published branch.
+ *
+ * A checkout is treated as a read-only renderer of the repository: it never
+ * commits, never merges, and never fights the user for local edits. Anything
+ * that is not a clean fast-forward (no git, detached HEAD, dirty tree, diverged
+ * history, network failure) is reported and skipped, and the build then runs on
+ * whatever is already on disk.
+ * @returns {void}
+ */
+function pullSource() {
+  if (process.argv.includes('--no-pull')) {
+    step('已指定 --no-pull，用磁盘上的代码构建（不拉取）')
+    return
+  }
+  if (git(['rev-parse', '--is-inside-work-tree']) !== 'true') {
+    step('源码目录不是 git 仓库，跳过拉取（这次构建用的就是磁盘上的代码）')
+    return
+  }
+  const branch = git(['rev-parse', '--abbrev-ref', 'HEAD'])
+  if (branch === null || branch === 'HEAD') {
+    step('当前处于分离头指针状态，跳过拉取')
+    return
+  }
+  const dirty = git(['status', '--porcelain'])
+  if (dirty === null) {
+    step('无法读取工作区状态，跳过拉取')
+    return
+  }
+  if (dirty.length > 0) {
+    step(`源码目录有 ${dirty.split('\n').length} 处未提交改动，跳过拉取以免被覆盖（提交后再试，或用 --no-pull 直接构建）`)
+    return
+  }
+
+  const before = git(['rev-parse', '--short', 'HEAD']) ?? 'unknown'
+  const digestBefore = manifestDigest()
+  step(`拉取 origin/${branch}（当前 ${before}）`)
+  if (git(['fetch', '--prune', 'origin', branch]) === null) {
+    step('拉取失败（网络或权限问题），继续用磁盘上的代码构建')
+    return
+  }
+
+  const incoming = git(['rev-list', '--count', 'HEAD..FETCH_HEAD'])
+  if (incoming === '0') {
+    step(`已是最新提交 ${before}，无需拉取`)
+    return
+  }
+  if (git(['merge', '--ff-only', 'FETCH_HEAD']) === null) {
+    step('本地提交与远端分叉，无法快进，继续用磁盘上的代码构建')
+    return
+  }
+  const after = git(['rev-parse', '--short', 'HEAD']) ?? before
+  step(`代码已更新：${before} → ${after}（${incoming} 个新提交）`)
+  if (manifestDigest() !== digestBefore) {
+    step('依赖清单有变化：本次构建可能缺依赖，建议先执行 npm install 与 npm install --prefix runtime')
+  }
 }
 
 /**
@@ -218,6 +313,7 @@ function forwardedArgs() {
       index += 1
       continue
     }
+    if (CONSUMED_FLAGS.has(token)) continue
     forwarded.push(token)
   }
   return forwarded
@@ -232,8 +328,15 @@ function main() {
   step(`目标：${outDir}`)
 
   if (!fs.existsSync(buildScript)) fail(`构建脚本缺失：${buildScript}`)
+
+  // Newest code first, so a fresh clone builds what the branch actually says.
+  pullSource()
+
   if (!fs.existsSync(path.join(projectRoot, 'node_modules', 'electron', 'dist'))) {
-    fail('缺少 Electron 运行时，请先在源码目录执行 npm install')
+    fail('缺少 Electron 运行时：请在源码目录执行 npm install 后再跑一次')
+  }
+  if (!fs.existsSync(path.join(projectRoot, 'runtime', 'node_modules', ...RUNTIME_PACKAGE.split('/')))) {
+    fail(`缺少 dsh 运行时：请执行 npm install --prefix runtime 后再跑一次`)
   }
 
   // A missing marker means the target is not our package: refuse to pour a
@@ -284,7 +387,8 @@ function main() {
   appendHistory(outDir, [before.version, '->', after.version, 'sessions', String(after.sessions), signature])
 
   console.log('\n用法备忘：')
-  console.log('  只更新当前代码            : 双击 一键更新.cmd')
+  console.log('  拉取最新代码并重建        : 双击 一键更新.cmd（git 检出会自动快进到 origin/portable）')
+  console.log('  不拉取，只重建磁盘上代码  : 一键更新.cmd --no-pull')
   console.log('  顺带升级 dsh 运行时       : 一键更新.cmd --version latest')
   console.log('  指定/回滚运行时版本       : 一键更新.cmd --version 0.2.2-alpha.3')
   console.log('  更新到别的目录            : 一键更新.cmd --out "<目录>"')

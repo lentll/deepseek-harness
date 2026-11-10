@@ -112,26 +112,33 @@ node scripts/build-portable.mjs  # 输出到 <源码盘符>:\AI\deepseek-harness
 它依次做这些事：
 
 1. 检查 Node 是否存在（没有就提示去装）；
-2. 校验目标目录里有 `portable.marker`，防止把 1 GB 构建倒进别人的目录；
-3. 记录更新前的运行时版本、会话数、`data\dsh-home` 文件数；
-4. 检测并关闭正在运行的程序（`taskkill /T`，含 dsh 子进程），否则 exe 被占用无法替换；
-5. 传了 `--version` 就先 `npm install` 该版本运行时到 `runtime\`；
-6. 调 `build-portable.mjs` 就地覆盖程序文件，**从不删除、从不碰 `data\`**；
-7. 重新签名，读回签名状态，把本次更新写进 `data\logs\update-history.log`；
-8. 对比更新前后的数据数量，不一致则返回码 2 提醒。
+2. **先拉取最新代码**：源码目录若是 git 检出（`git clone -b portable` 得到的那种），就 `fetch` 后 `--ff-only` 快进到 `origin/portable`，并打印 `旧提交 → 新提交（N 个新提交）`；若不是 git 目录、有未提交改动、本地与远端已分叉、或网络失败，则跳过拉取并说明原因，继续用磁盘上的代码构建；
+3. 校验 `node_modules\electron\dist` 与 `runtime\node_modules\@deepseek-ai\dsh` 都在，缺哪个就提示对应的 `npm install`；
+4. 校验目标目录里有 `portable.marker`，防止把 1 GB 构建倒进别人的目录；
+5. 记录更新前的运行时版本、会话数、`data\dsh-home` 文件数；
+6. 检测并关闭正在运行的程序（`taskkill /T`，含 dsh 子进程），否则 exe 被占用无法替换；
+7. 传了 `--version` 就先 `npm install` 该版本运行时到 `runtime\`；
+8. 调 `build-portable.mjs` 就地覆盖程序文件，**从不删除、从不碰 `data\`**；
+9. 重新签名，读回签名状态，把本次更新写进 `data\logs\update-history.log`；
+10. 对比更新前后的数据数量，不一致则返回码 2 提醒。
+
+拉取按只读处理：只做快进，不产生合并提交，也不 stash 你的改动。工作区脏就直接跳过拉取——宁可少更新一步，也不覆盖你手上的代码。
 
 ### 常用变体
 
 ```bat
-一键更新.cmd                                  :: 只更新当前代码
+一键更新.cmd                                  :: 拉取最新代码并重建
+一键更新.cmd --no-pull                        :: 不拉取，只重建磁盘上的代码
 一键更新.cmd --version latest                 :: 顺带把 dsh 运行时升到 npm 最新版
 一键更新.cmd --version <版本号>               :: 指定版本（也可用来回滚）
 一键更新.cmd --out "<任意目录>"               :: 换输出位置（该目录需已有 portable.marker）
 ```
 
-命令行等价写法：`node scripts\update.mjs [--version <ver>] [--out <dir>]`。
+命令行等价写法：`node scripts\update.mjs [--no-pull] [--version <ver>] [--out <dir>]`。
 
 不传 `--out` 时用上面「构建」里的默认目录（源码盘符 + `\AI\deepseek-harness-portable`），换盘不用改脚本。
+
+新 clone 出来的目录第一次跑之前要先装两样都不入库的依赖：`npm install`（Electron）和 `npm install --prefix runtime`（dsh 运行时）。仓库里只有约 200 KB 源码，`data\` 与依赖都在本地。
 
 ### 更新的前提
 

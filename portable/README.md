@@ -2,7 +2,7 @@
 
 把 DeepSeek Harness 的 Web 前端套进 Electron 外壳，做成一个**双击即用、免安装、数据随盘走**的 Windows 便携程序。
 
-产物默认落在 **源码所在盘符** 的 `\AI\deepseek-harness-protable`——本机源码在 `F:` 盘，所以实际路径是 `F:\AI\deepseek-harness-protable`（目录名沿用最初指定的拼写 `protable`，不是 `portable`）。
+产物默认落在 **源码所在盘符** 的 `\AI\deepseek-harness-protable`——本机源码在 `F:` 盘，所以实际路径是 `F:\AI\deepseek-harness-protable`（这只是本地输出目录名，与仓库分支名无关；分支已改名为 `portable`）。
 
 盘符只影响**编译时把文件写到哪**，不影响程序本身：产物以 exe 所在目录为根目录，U 盘插到任何电脑、被分配成任何盘符都能直接运行（见下表的「换电脑自动识别路径」）。
 
@@ -12,7 +12,7 @@
 |---|---|---|
 | 官方源码仓（上游） | `https://github.com/deepseek-ai/deepseek-harness` | MIT，59 个包组。**版本以这里为准**：官方发 `dsh-v*` tag，同时把 `@deepseek-ai/dsh` 发到 npm |
 | 本机源码副本 | 工作区里的 `deepseek-harness-master\`（与 `deepseek-harness-portable\` 同级） | 官方仓的**快照**（`@deepseek-ai/dsh-root` 0.2.2-alpha.3，没有 `.git`）。只用来取原始图标、查实现细节，不参与构建 |
-| fork 容器 | `https://github.com/lentll/deepseek-harness` | 从官方仓 fork 出来的个人副本，**只为放 `protable` 分支和跑 Actions**；它的 `master` 是上游快照，不承载任何外壳代码 |
+| fork 容器 | `https://github.com/lentll/deepseek-harness` | 从官方仓 fork 出来的个人副本，**只为放 `portable` 分支和跑 Actions**；它的 `master` 是上游快照，不承载任何外壳代码 |
 
 升级链路是单向的：
 
@@ -207,10 +207,10 @@ $HOME/.openclaw/…        可选插件与 workspace/skills
 
 ## 云端构建（GitHub Actions）
 
-本工程同时以 `portable/` 的形式维护在 fork `lentll/deepseek-harness` 的 `protable` 分支（外壳源码与 workflow 同址），`master` 上另有一份负责一键出包的 `build-portable.yml`。细节见 `推送指南.md`，要点：
+本工程同时以 `portable/` 的形式维护在 fork `lentll/deepseek-harness` 的 `portable` 分支（外壳源码与 workflow 同址），`master` 上另有一份负责一键出包的 `build-portable.yml`。细节见 `推送指南.md`，要点：
 
 - **上游是谁**：`env.UPSTREAM_REPO` 指向官方仓 `deepseek-ai/deepseek-harness`，按它的 release 列表取最新 `dsh-v*`（`/releases/latest` 会跳过 prerelease，而 dsh 只发 prerelease，所以列出来自己挑）。fork 的 `master` 只是上游旧快照，**不需要同步**，也不参与出包。
-- **分支形态**：`protable` 是**独立根分支**（不含上游代码），只放 `portable/` 与 workflow。原因：本机到 GitHub 仅约 33 KB/s，完整克隆 353 MB 的上游仓库不现实，独立分支只有约 200 KB，CI 检出也快。
+- **分支形态**：`portable` 是**独立根分支**（不含上游代码），只放 `portable/` 与 workflow。原因：本机到 GitHub 仅约 33 KB/s，完整克隆 353 MB 的上游仓库不现实，独立分支只有约 200 KB，CI 检出也快。
 - **触发方式只有手动**：两份 workflow 都去掉了 `schedule` 和 `push`，同步上游、改外壳、提交代码都不会自己开跑；要出包就点 Run workflow。原因：一次构建 8–12 分钟且要下载 1.3 GB 依赖，自动跑容易在你没准备时占掉额度、覆盖 Release。
 - **版本映射**：GitHub tag `dsh-v0.2.2-rc.1` → npm 包 `0.2.2-rc.1`；tag 已打但 npm 未发布时任务跳过并告警。
 - **产物**：Release `portable-v<版本>` + `DeepSeek-Harness-portable-<版本>.7z`（**排除 `data/`**，因此不含任何 API Key）。
@@ -223,7 +223,7 @@ $HOME/.openclaw/…        可选插件与 workspace/skills
 
 - **入口**：Actions → **Build portable (master)** → Run workflow。默认分支就是 master，所以按钮一直在。
 - **版本**：填 `version` 就用它（不在 npm 上直接报错）；不填则取「本分支 `package.json` 版本」与「上游最新 `dsh-v*`」中较大的那个，若它还没发到 npm 就自动退回另一个——master 经常带着「已合并、未发布」的版本号。
-- **外壳仍来自 protable**：先 checkout master 读版本，再把 `protable` 检出到 `portable-src/` 构建，上游源码与外壳不混在一起。
+- **外壳仍来自 portable 分支**：先 checkout master 读版本，再把 `portable` 分支检出到 `portable-src/` 构建，上游源码与外壳不混在一起。
 - **同名 Release**：已存在就直接跳过（避免误覆盖别人已下载的包），确实要重建时勾 `force`。
 
 文件本地副本在 `ci/build-portable.yml`（改完贴回 GitHub），`ci/_test-semver.ps1` 与 `ci/_test-resolve.ps1` 是版本比较、版本选择的离线单测（12 + 6 条断言），`ci/_test-secrets.mjs` 是去敏扫描的 19 条断言（`node ci/_test-secrets.mjs`）。这些逻辑改动后先跑对应的单测再提交。

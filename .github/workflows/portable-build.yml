@@ -1,6 +1,6 @@
 # Build the portable Windows package and publish it as a release.
 #
-# Every step runs from a `protable` checkout, so the wrapper source and this
+# Every step runs from a `portable` checkout, so the wrapper source and this
 # workflow always move together.
 #
 # The version to build comes from the upstream release tag (for example
@@ -48,10 +48,10 @@ jobs:
       SIGNING_PFX_PASSWORD: ${{ secrets.SIGNING_PFX_PASSWORD }}
 
     steps:
-      - name: Checkout protable branch
+      - name: Checkout portable branch
         uses: actions/checkout@v4
         with:
-          ref: protable
+          ref: portable
           fetch-depth: 1
 
       - name: Resolve target version
@@ -231,7 +231,7 @@ jobs:
             "",
             "- Upstream tag: ${{ steps.resolve.outputs.tag }}",
             "- Runtime: @deepseek-ai/dsh@$version (published npm package, not compiled from source)",
-            "- Shell source: portable/ on the protable branch, commit ${{ github.sha }}",
+            "- Shell source: portable/ on the portable branch, commit ${{ github.sha }}",
             "- No installer: unpack, run DeepSeek Harness.exe, keep the folder on the USB stick.",
             "- No user data inside: set the model endpoint under Settings - Models on first run."
           ) -join "`n"

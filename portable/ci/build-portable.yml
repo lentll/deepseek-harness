@@ -3,7 +3,7 @@
 # Why this file lives on master: the Actions tab lists the workflows of the
 # default branch, so this is the one place where a "Run workflow" button shows
 # up right next to the code you just updated upstream. The Electron shell is
-# still taken from `portable/` on the `protable` branch (an independent root
+# still taken from `portable/` on the `portable` branch (an independent root
 # branch), so no upstream source is ever copied into that branch.
 #
 # Version picked, in this order:
@@ -37,7 +37,7 @@ on:
 permissions:
   contents: write
 
-# Shares the group with the protable workflow so two builds never race for the
+# Shares the group with the portable workflow so two builds never race for the
 # same release tag, and a long upload is never cancelled halfway.
 concurrency:
   group: portable-build
@@ -64,7 +64,7 @@ jobs:
       - name: Checkout portable shell
         uses: actions/checkout@v4
         with:
-          ref: protable
+          ref: portable
           path: portable-src
           fetch-depth: 1
 
@@ -281,7 +281,7 @@ jobs:
           $notes = @(
             "Portable Windows build of DeepSeek Harness $version.",
             "",
-            "- Requested from master (${{ github.sha }}), shell from protable.",
+            "- Requested from master (${{ github.sha }}), shell from portable.",
             "- Version source: ${{ steps.resolve.outputs.source }}",
             "- Runtime: @deepseek-ai/dsh@$version (published npm package, not compiled from source)",
             "- No installer: unpack, run DeepSeek Harness.exe, keep the folder on the USB stick.",

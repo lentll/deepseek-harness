@@ -210,11 +210,18 @@ const instructions = `DeepSeek Harness 便携版（U 盘版）
   data\\                    全部数据，随 U 盘走
     dsh-home\\              会话、设置、凭据、插件档案（$DSH_HOME）
     agents\\                共享的 Agent 配置（$DSH_AGENTS_HOME）
+    documents\\             默认工作区的父目录（代替本机的“文档”目录）
+    workspace\\             从别的电脑或别的盘搬回来的工作区
+    pnpm\\                  插件与技能的安装缓存
     electron\\              窗口的浏览器配置与缓存
     logs\\                  运行日志（启动失败时先看这里）
     tmp\\                   临时文件
-    backup\\                换机器时的路径修正备份
+    backup\\                换机器时的路径修正与工作区迁移备份
   portable.marker          便携版标记文件，请勿删除
+
+  说明：默认工作区、Skill 商店装的技能、插件，都会落在 data 里。
+  打开程序时左侧栏的“默认工作区”就是 data\\documents\\deepseek-harness\\default-workspace，
+  不需要另行选择目录。
 
 
 三、换电脑 / 换盘符
@@ -223,13 +230,19 @@ const instructions = `DeepSeek Harness 便携版（U 盘版）
   2) 检测到上次运行位置和这次不同（例如 F: 变成 G:）时，
      自动把会话和设置里记录的旧绝对路径改写成新路径；
      修改明细写入 data\\logs\\path-migration-*.json，
-     改动前的文件备份在 data\\backup\\ 下。
+     改动前的文件备份在 data\\backup\\ 下；
+  3) 发现某个工作区指向一个已经不存在的目录时，把它改指到
+     data\\workspace\\ 下并复制原内容（只复制，不删除原目录）；
+     明细写入 data\\logs\\workspace-repair-*.json。
 
 
 四、零残留说明
   本程序只写 data 目录，不写注册表，不写系统用户目录：
   - 浏览器配置、缓存、崩溃转储、日志、临时文件全部重定向到 data\\；
+  - 插件与技能的 pnpm 安装缓存也在 data\\pnpm\\；
   - 运行结束后不会在 C 盘留下用户数据；
+  - 运行时若在本机建了一个空的 ~\\.dsh 目录，程序退出前会自动清掉
+    （只删空目录，目录里只要有任意文件就不动）；
   - 拔掉 U 盘，本机不留应用痕迹
     （Windows 自身的“最近使用程序”记录属于系统行为，与本程序无关）。
 

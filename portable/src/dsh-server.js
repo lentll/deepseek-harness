@@ -85,6 +85,53 @@ function resolveRuntimeEntry(resourcesPath) {
 }
 
 /**
+ * Create the Web profile without starting the server.
+ *
+ * The runtime writes its profile skeleton (package.json, cordis.yml, the patch
+ * layer) during command startup, before it parses the flags, so `web --help`
+ * materialises the profile and exits. That matters on a first run: the portable
+ * shell has to add its `documentsDirectory` override to the patch layer *before*
+ * the Web application resolves its first-use Workspace, otherwise the very
+ * first Workspace is created on the host disk.
+ *
+ * @param {object} options - profile options.
+ * @param {string} options.resourcesPath - Electron's `process.resourcesPath`.
+ * @param {Record<string, string>} options.dirs - result of `portablePaths`.
+ * @param {NodeJS.ProcessEnv} options.env - environment from `portableEnvironment`.
+ * @param {number} [options.timeoutMs] - how long to wait for the skeleton.
+ * @returns {Promise<boolean>} whether the command finished in time.
+ */
+async function initProfile({ resourcesPath, dirs, env, timeoutMs = 60_000 }) {
+  const entry = resolveRuntimeEntry(resourcesPath)
+  if (!fs.existsSync(entry)) return false
+
+  const child = spawn(process.execPath, [entry, 'web', '--help'], {
+    cwd: dirs.root,
+    env: { ...env, ELECTRON_RUN_AS_NODE: '1' },
+    stdio: 'ignore',
+    windowsHide: true,
+  })
+
+  return await new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      resolve(false)
+      try {
+        child.kill()
+      } catch {
+        // Already gone.
+      }
+    }, timeoutMs)
+    timer.unref()
+    const finish = (ok) => {
+      clearTimeout(timer)
+      resolve(ok)
+    }
+    child.once('exit', (code) => finish(code === 0))
+    child.once('error', () => finish(false))
+  })
+}
+
+/**
  * Start the Web application.
  * @param {object} options - start options.
  * @param {string} options.resourcesPath - Electron's `process.resourcesPath`.
@@ -182,4 +229,4 @@ async function startDshServer({ resourcesPath, dirs, env, ports = DEFAULT_PORTS,
   return ready
 }
 
-module.exports = { startDshServer, resolveRuntimeEntry, DEFAULT_PORTS }
+module.exports = { startDshServer, initProfile, resolveRuntimeEntry, DEFAULT_PORTS }

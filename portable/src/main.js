@@ -12,6 +12,7 @@
 
 const { app, BrowserWindow, Menu, Tray, desktopCapturer, dialog, nativeImage, screen, shell } = require('electron')
 const fs = require('node:fs')
+const os = require('node:os')
 const path = require('node:path')
 
 const {
@@ -20,9 +21,12 @@ const {
   ensurePortableDirectories,
   configureElectronPaths,
   portableEnvironment,
+  ensureProfileOverlay,
+  pruneEmptyDirectory,
 } = require('./portable')
 const { migratePortablePaths } = require('./path-migration')
-const { startDshServer } = require('./dsh-server')
+const { repairWorkspaces } = require('./workspace-repair')
+const { startDshServer, initProfile } = require('./dsh-server')
 const { closeAction, trayMenuTemplate, trayTooltip, hiddenNotice } = require('./window-lifecycle')
 
 const APP_TITLE = 'DeepSeek Harness'
@@ -244,6 +248,12 @@ async function reportStartupFailure(error) {
   app.exit(1)
 }
 
+/** Drop the empty `~/.dsh` the runtime leaves behind, if it is still empty. */
+function pruneHostHome() {
+  const hostHome = path.join(os.homedir(), '.dsh')
+  if (pruneEmptyDirectory(hostHome)) log(`removed empty host folder: ${hostHome}`)
+}
+
 /** Start the runtime, repair stale paths, and show the Web application. */
 async function boot() {
   log(`portable root: ${root}`)
@@ -254,6 +264,29 @@ async function boot() {
   }
 
   const env = portableEnvironment(dirs)
+
+  // dsh resolves its first-use Workspace from the OS Documents folder, which is
+  // a host path. The override has to be in the profile patch layer before the
+  // Web application boots, so a first run materialises the profile first.
+  const overlay = ensureProfileOverlay(dirs)
+  if (overlay.reason === 'no-profile') {
+    const created = await initProfile({ resourcesPath: process.resourcesPath, dirs, env })
+    const retried = created ? ensureProfileOverlay(dirs) : { written: false, reason: 'profile-init-failed' }
+    log(`workspace overlay: ${retried.reason}`)
+  } else {
+    log(`workspace overlay: ${overlay.reason}`)
+  }
+
+  // Workspaces recorded on the host disk (or on another machine's drive) are
+  // re-pointed at the portable folder before the runtime loads the registry.
+  const repaired = repairWorkspaces(dirs)
+  if (repaired.changed) {
+    const moved = repaired.moves.map((move) => `${move.from} -> ${move.to}`).join('; ')
+    log(`workspaces re-pointed: ${moved}`)
+  } else {
+    log(`workspaces unchanged: ${repaired.reason ?? 'none'}`)
+  }
+
   const server = await startDshServer({
     resourcesPath: process.resourcesPath,
     dirs,
@@ -262,6 +295,10 @@ async function boot() {
   })
   serverStop = server.stop
   log(`server ready: ${server.url.replace(/token=[^&]+/, 'token=***')}`)
+
+  // The runtime touches `~/.dsh` during startup even though DSH_HOME is set;
+  // clearing the empty leftover keeps the "nothing on the host" promise.
+  pruneHostHome()
 
   if (mainWindow === undefined) return
   await mainWindow.loadURL(server.url)

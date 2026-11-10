@@ -10,6 +10,9 @@
  *   data\                  everything this application writes
  *     dsh-home\            $DSH_HOME: profiles, sessions, settings, credentials
  *     agents\              $DSH_AGENTS_HOME
+ *     documents\           stand-in for the OS Documents folder; dsh creates the
+ *                          first-use Workspace underneath it
+ *     workspace\           Workspaces that used to live on the host disk
  *     electron\            Chromium profile, HTTP cache, GPU cache, session data
  *     logs\                shell.log, server.log, migration records
  *     tmp\                 TEMP/TMP for the shell and the agent runtime
@@ -57,6 +60,8 @@ function portablePaths(root) {
     data,
     dshHome: path.join(data, 'dsh-home'),
     agentsHome: path.join(data, 'agents'),
+    documents: path.join(data, 'documents'),
+    workspace: path.join(data, 'workspace'),
     electron,
     userData: path.join(electron, 'user-data'),
     sessionData: path.join(electron, 'session-data'),
@@ -81,6 +86,8 @@ function ensurePortableDirectories(dirs) {
     dirs.data,
     dirs.dshHome,
     dirs.agentsHome,
+    dirs.documents,
+    dirs.workspace,
     dirs.electron,
     dirs.userData,
     dirs.sessionData,
@@ -130,16 +137,132 @@ function portableEnvironment(dirs) {
   // The native addon loader keeps a compiled-loader cache under
   // `%LOCALAPPDATA%` unless this variable redirects it.
   env.NARB_NATIVE_CACHE_DIR = path.join(dirs.electron, 'native-cache')
+  // Plugin and skill installs run through pnpm, whose store and HTTP cache
+  // default to the host profile. Both are redirected so an install done on the
+  // stick leaves nothing behind on the machine it ran on.
+  env.PNPM_HOME = path.join(dirs.data, 'pnpm', 'home')
+  env.npm_config_store_dir = path.join(dirs.data, 'pnpm', 'store')
+  env.npm_config_cache = path.join(dirs.data, 'pnpm', 'cache')
+  env.XDG_CACHE_HOME = path.join(dirs.data, 'cache')
   delete env.NODE_OPTIONS
   delete env.ELECTRON_RUN_AS_NODE
   return env
 }
 
+/** Marker line that keeps the profile overlay injection idempotent. */
+const PROFILE_OVERLAY_MARKER = '# portable: keep the default Workspace inside the portable data folder'
+
+/** Profile that serves the Web UI. */
+const WEB_PROFILE = 'web'
+
+/**
+ * Locate the patch layer of the Web profile.
+ * @param {Record<string, string>} dirs - result of {@link portablePaths}.
+ * @returns {string} absolute path to `cordis.patch.yml`.
+ */
+function profilePatchPath(dirs) {
+  return path.join(dirs.dshHome, 'profiles', WEB_PROFILE, 'cordis.patch.yml')
+}
+
+/**
+ * Pin the first-use Workspace inside the portable root.
+ *
+ * dsh resolves its default Workspace from the OS Documents folder, which is a
+ * host path. The profile patch layer supports a deployment override
+ * (`documentsDirectory`), and `!!js` lets that override be computed at load
+ * time from `DSH_PORTABLE_ROOT` — so the same patch file keeps working when the
+ * stick mounts under another drive letter, without the shell rewriting paths on
+ * every start.
+ *
+ * The patch file only exists once dsh has created the profile, so a missing
+ * file is reported rather than created: writing a partial profile would race
+ * the runtime's own bootstrap.
+ *
+ * @param {Record<string, string>} dirs - result of {@link portablePaths}.
+ * @returns {{written: boolean, reason: string}} outcome.
+ */
+function ensureProfileOverlay(dirs) {
+  const file = profilePatchPath(dirs)
+  let text
+  try {
+    text = fs.readFileSync(file, 'utf8')
+  } catch {
+    return { written: false, reason: 'no-profile' }
+  }
+  if (text.includes(PROFILE_OVERLAY_MARKER)) return { written: false, reason: 'present' }
+
+  const overlay = [
+    '',
+    PROFILE_OVERLAY_MARKER,
+    '- id: workspace-controller',
+    '  name: "@deepseek-ai/dsh-api-workspace-controller"',
+    '  config:',
+    // YAML single quotes keep both backslashes; JavaScript then reads `\\` as
+    // one separator, which is what `process.env.DSH_PORTABLE_ROOT + '\data\...'`
+    // needs to build a real Windows path.
+    "    documentsDirectory: !!js process.env.DSH_PORTABLE_ROOT + '\\\\data\\\\documents'",
+    '',
+  ].join('\n')
+
+  // A profile that was never patched stores the empty flow sequence `[]`.
+  // A block entry appended after it is a YAML error ("end of the stream or a
+  // document separator is expected"), so the marker has to go first — the rest
+  // of the file is comments, which stay.
+  const base = text.replace(/^\s*\[\]\s*$/m, '')
+
+  try {
+    fs.writeFileSync(file, `${base.replace(/\s*$/, '')}\n${overlay}`, 'utf8')
+    return { written: true, reason: 'added' }
+  } catch (error) {
+    return { written: false, reason: `write-failed: ${error.message}` }
+  }
+}
+
+/**
+ * Remove a directory tree that holds nothing but empty directories.
+ *
+ * The runtime creates `~/.dsh` (sometimes with an empty `profiles/` inside)
+ * before it reads `DSH_HOME`, so a portable run can leave an empty folder on
+ * the host. Only provably empty directories are removed: one file anywhere in
+ * the tree keeps the whole tree, because it may belong to a non-portable
+ * install that shares this machine.
+ *
+ * @param {string} target - absolute directory.
+ * @returns {boolean} whether the tree was removed.
+ */
+function pruneEmptyDirectory(target) {
+  let entries
+  try {
+    entries = fs.readdirSync(target, { withFileTypes: true })
+  } catch {
+    return false
+  }
+  let empty = true
+  for (const entry of entries) {
+    if (!entry.isDirectory()) {
+      empty = false
+      continue
+    }
+    if (!pruneEmptyDirectory(path.join(target, entry.name))) empty = false
+  }
+  if (!empty) return false
+  try {
+    fs.rmdirSync(target)
+    return true
+  } catch {
+    return false
+  }
+}
+
 module.exports = {
   MARKER_FILE,
+  PROFILE_OVERLAY_MARKER,
   resolvePortableRoot,
   portablePaths,
   ensurePortableDirectories,
   configureElectronPaths,
   portableEnvironment,
+  ensureProfileOverlay,
+  profilePatchPath,
+  pruneEmptyDirectory,
 }

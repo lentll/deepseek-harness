@@ -41,7 +41,8 @@ CI 每天直接查**官方仓**的 releases（`UPSTREAM_REPO: deepseek-ai/deepse
 deepseek-harness-portable\
   src\
     main.js               Electron 主进程：窗口、生命周期、启动编排
-    portable.js           便携路径推导、Electron 路径重定向、子进程环境
+    portable.js           便携路径推导、Electron 路径重定向、子进程环境、profile 覆盖注入
+    workspace-repair.js   把默认/失效工作区搬回盘内（只复制不删除）
     dsh-server.js         启动 dsh Web 服务（ELECTRON_RUN_AS_NODE）、解析带 token 的 URL
     path-migration.js     换盘/换机后的绝对路径自愈
     splash.html           启动画面
@@ -52,6 +53,15 @@ deepseek-harness-portable\
     sign-exe.ps1          自签名代码签名证书 + Authenticode 签名
   runtime\                由 npm 安装的 dsh 运行时（@deepseek-ai/dsh + 依赖）
   build\icon.ico
+
+产物里的 data\：
+  dsh-home\               DSH_HOME：profiles（含 patch 覆盖）、sessions、skills、storages
+  agents\                 DSH_AGENTS_HOME
+  documents\              冒充系统「文档」目录，dsh 首次创建的默认工作区落在这里
+  workspace\              从主机搬来的工作区
+  pnpm\                   插件/技能安装的 store 与缓存
+  electron\               Chromium 配置与各类缓存
+  logs\  tmp\  backup\
 ```
 
 ## 运行时为什么用 npm 包而不是源码
@@ -148,9 +158,23 @@ node scripts/build-portable.mjs  # 输出到 <源码盘符>:\AI\deepseek-harness
 | 原生插件编译缓存（`NARB_NATIVE_CACHE_DIR`） | `data\electron\native-cache\` |
 | 崩溃转储 | `data\electron\crash-dumps\` |
 | dsh spill、技能解包、ACL 锁 | `data\tmp\` |
+| 插件 / 技能安装的 pnpm store 与 HTTP 缓存（`npm_config_store_dir`、`npm_config_cache`、`PNPM_HOME`） | `data\pnpm\` |
 | 运行日志 | `data\logs\` |
 
 实测：运行一次后 `data\tmp` 新增 `dsh-spill-*`、`dsh-acl-skill-*`，主机 `%TEMP%` 条目数不变（50 → 50），且其中旧的 `dsh-*` 时间戳停在修复前的测试时刻。
+
+## 工作区与技能装在哪
+
+dsh 的**默认工作区**不是从 `DSH_HOME` 推出来的，而是拿系统的「文档」目录拼出来的：`<文档>\deepseek-harness\default-workspace`。上一版就是栽在这里——工作区落在 `D:\Users\Documents\...`，于是 Skill 商店（skillhub）把 kit 装进那个本机目录，拔掉 U 盘什么都带不走。
+
+现在有两道约束把它按回盘内：
+
+1. **首次创建就落盘**：`src/portable.js` 的 `ensureProfileOverlay()` 往 profile 补丁层（`data\dsh-home\profiles\web\cordis.patch.yml`）注入一条 `workspace-controller` 覆盖，`documentsDirectory` 用 `!!js process.env.DSH_PORTABLE_ROOT + '\data\documents'` 现算——写死盘符会在换机时失效，现算才能在 E:、F: 上都对。补丁只加一次（带 marker 幂等），空 profile 的 `[]` 会先被摘掉再追加，否则 YAML 会因子序列冲突解析失败、整个 Web 起不来（`ci/_test-profile-overlay.mjs` 用 js-yaml 真解析把关）。
+2. **旧记录自愈**：`src/workspace-repair.js` 在每次启动、dsh 加载注册表之前跑一遍：`default-workspace` 即使目录还在也搬到 `data\workspace\default-workspace`（内容一并复制，≤64 MB），换机后失效的路径重新指向 `data\workspace\<标题>`，用户自己挑的目录只要还在就一根手指都不碰。原记录备份到 `data\backup\workspace-<时间>.json`，报告写 `data\logs\workspace-repair-<时间>.json`。
+
+两条都**只复制、不删除**：旧目录原样留在本机，报告里的 `leftover` 就是可以自行清理的路径。技能本体（`<DSH_HOME>\skills`、`<工作区>\.dsh\skills`）因此也在盘内。
+
+实测（全新空目录当便携根）：首启日志 `workspace overlay: added` → 新建记录 `...\data\documents\deepseek-harness\default-workspace`；已有安装：日志 `workspaces re-pointed: D:\Users\Documents\... -> ...\data\workspace\default-workspace`，`skillhub-kit` 一并搬入。
 
 ## 云端构建（GitHub Actions）
 

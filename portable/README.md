@@ -214,7 +214,7 @@ $HOME/.openclaw/…        可选插件与 workspace/skills
 
 ## 云端构建（GitHub Actions）
 
-本工程同时以 `portable/` 的形式维护在 fork `lentll/deepseek-harness` 的 `portable` 分支（外壳源码与 workflow 同址），`master` 上另有一份负责一键出包的 `build-portable.yml`。细节见 `推送指南.md`，要点：
+本工程同时以 `portable/` 的形式维护在 fork `lentll/deepseek-harness` 的 `portable` 分支（外壳源码与 workflow 同址），`master` 上另有一份负责一键出包的 `build-portable.yml`。要点：
 
 - **上游是谁**：`env.UPSTREAM_REPO` 指向官方仓 `deepseek-ai/deepseek-harness`，按它的 release 列表取最新 `dsh-v*`（`/releases/latest` 会跳过 prerelease，而 dsh 只发 prerelease，所以列出来自己挑）。fork 的 `master` 只是上游旧快照，**不需要同步**，也不参与出包。
 - **分支形态**：`portable` 是**独立根分支**（不含上游代码），只放 `portable/` 与 workflow。原因：本机到 GitHub 仅约 33 KB/s，完整克隆 353 MB 的上游仓库不现实，独立分支只有约 200 KB，CI 检出也快。

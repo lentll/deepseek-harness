@@ -107,7 +107,7 @@ node scripts/build-portable.mjs  # 输出到 <源码盘符>:\AI\deepseek-harness
 
 ## 更新（一键）
 
-改完 `src\` 里的外壳代码、或想换 dsh 运行时版本后，**双击项目根目录的 `一键更新.cmd`** 即可，不用记命令。
+改完 `src\` 里的外壳代码、或想换 dsh 运行时版本后，**双击项目根目录的 `一键更新.cmd`** 即可，不用记命令。这个 bat 只存在于本地这棵已装好依赖的构建树里，仓库不跟踪它——clone 出来的目录直接跑 `node scripts\update.mjs`。
 
 它依次做这些事：
 
